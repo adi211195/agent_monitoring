@@ -14,7 +14,7 @@ if %errorlevel% neq 0 (
 )
 
 echo Installing build dependencies...
-python -m pip install pyinstaller psutil pywin32 requests Pillow mss opencv-python --quiet
+python -m pip install -r requirements.txt --quiet
 
 if %errorlevel% neq 0 (
     echo.
@@ -27,7 +27,7 @@ echo.
 echo Building executable...
 echo.
 
-python -m PyInstaller --name=MonitoringApp --onefile --windowed --clean main_app.py
+python build_exe.py
 
 if %errorlevel% neq 0 (
     echo.
@@ -44,7 +44,7 @@ echo.
 echo Executable location:
 echo    dist\MonitoringApp.exe
 echo.
-echo Run the application:
-echo    dist\MonitoringApp.exe
+echo Copy dist\MonitoringApp.exe ke komputer lain untuk mulai monitoring.
+echo Saat pertama kali dijalankan, akan diminta isi URL server.
 echo.
 pause
