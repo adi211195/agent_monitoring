@@ -1,0 +1,9 @@
+psutil==5.9.8
+pywin32==306
+requests==2.31.0
+PyInstaller==6.3.0
+Pillow==10.2.0
+mss==9.0.1
+opencv-python==4.9.0.80
+winsdk==1.0.0.b10
+pynput==1.7.6
