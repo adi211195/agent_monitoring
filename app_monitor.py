@@ -118,6 +118,78 @@ class AppMonitor:
         self.current_app = None
         self.current_app_start = None
 
+    def get_active_apps_snapshot(self):
+        """
+        Ambil daftar SEMUA aplikasi yang sedang terbuka saat ini (window
+        visible & punya judul), mirip daftar Alt+Tab.
+        Proses sistem Windows yang tidak perlu ditampilkan difilter.
+        """
+        # Proses Windows yang selalu jalan di background & tidak relevan untuk dimonitor
+        SYSTEM_BLACKLIST = {
+            'textinputhost.exe',       # Windows Input Experience
+            'shellexperiencehost.exe', # Windows Shell Experience
+            'searchhost.exe',          # Windows Search
+            'startmenuexperiencehost.exe',
+            'runtimebroker.exe',
+            'applicationframehost.exe',
+            'systemsettings.exe',
+            'winstore.app.exe',
+            'dwm.exe',                 # Desktop Window Manager
+            'explorer.exe',            # Windows Explorer (desktop, bukan File Explorer window)
+            'sihost.exe',
+            'taskhostw.exe',
+            'ctfmon.exe',
+            'securityhealthsystray.exe',
+            'svchost.exe',
+            'lsass.exe',
+            'csrss.exe',
+            'winlogon.exe',
+            'services.exe',
+            'fontdrvhost.exe',
+            'smartscreen.exe',
+        }
+
+        apps = []
+        seen = set()
+
+        try:
+            import win32gui
+            import win32process
+
+            def _enum_handler(hwnd, _):
+                if not win32gui.IsWindowVisible(hwnd):
+                    return
+                title = win32gui.GetWindowText(hwnd)
+                if not title or len(title.strip()) < 2:
+                    return
+                try:
+                    _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                    process = psutil.Process(pid)
+                    app_name = process.name()
+                except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+                    return
+
+                # Filter proses sistem
+                if app_name.lower() in SYSTEM_BLACKLIST:
+                    return
+
+                key = app_name.lower()
+                if key in seen:
+                    return
+                seen.add(key)
+
+                apps.append({
+                    "app_name": app_name,
+                    "window_title": title,
+                    "pid": pid,
+                })
+
+            win32gui.EnumWindows(_enum_handler, None)
+        except ImportError:
+            pass
+
+        return apps
+
     def start_monitoring(self, callback=None):
         while True:
             try:

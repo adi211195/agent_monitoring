@@ -6,22 +6,51 @@ import psutil
 import subprocess
 import os
 from datetime import datetime
+from app_paths import get_app_data_path
 
 class DataSender:
     def __init__(self, server_url=None):
-        self.config_path = "device_config.json"
+        self.config_path = self._resolve_config_path()
         config = self._load_config()
-        
+
         self.server_url = config.get("server_url")
         self.device_id = config.get("device_id")
-        
+        self.token = config.get("token")  # Token Sanctum, didapat saat register_device()
+
         # Jika device_id belum ada di config, hasilkan dari hardware
         if not self.device_id:
             self.device_id = self._generate_hardware_id()
-        
+
         # Jika ada server_url yang dioper saat init, gunakan itu (biasanya untuk testing)
         if server_url:
             self.server_url = server_url
+
+    def _headers(self, with_json=True):
+        """
+        Header standar untuk semua request ke API.
+        Menyertakan token Sanctum (kalau sudah ada) supaya endpoint yang
+        diproteksi auth:sanctum bisa diakses.
+        """
+        headers = {"Accept": "application/json"}
+        if with_json:
+            headers["Content-Type"] = "application/json"
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
+
+    def _resolve_config_path(self):
+        """
+        Pakai path absolut di %LOCALAPPDATA%\\MonitoringApp\\device_config.json,
+        bukan path relatif "device_config.json".
+
+        Ini penting karena aplikasi sekarang di-install ke Program Files dan/atau
+        dijalankan otomatis lewat Windows Startup / Task Scheduler, di mana
+        current working directory belum tentu sama dengan folder tempat exe
+        berada (dan Program Files sendiri terproteksi, tidak writable untuk user
+        biasa) -- kalau tetap pakai path relatif, config bisa gagal
+        tersimpan/terbaca dengan PermissionError.
+        """
+        return get_app_data_path("device_config.json")
 
     def _generate_hardware_id(self):
         """Menghasilkan ID unik yang konsisten untuk komputer yang sama (Hardware ID)"""
@@ -50,8 +79,8 @@ class DataSender:
         return {}
 
     def is_registered(self):
-        """Mengecek apakah device sudah terdaftar (punya device_id dan server_url)"""
-        return bool(self.device_id and self.server_url)
+        """Mengecek apakah device sudah terdaftar (punya device_id, server_url, dan token)"""
+        return bool(self.device_id and self.server_url and self.token)
 
     def register_device(self, server_url):
         """Mendaftarkan device ke server baru"""
@@ -86,12 +115,24 @@ class DataSender:
         try:
             response = requests.post(register_url, json=payload, timeout=15)
             if response.status_code in [200, 201]:
+                data = response.json()
+                token = data.get("token")
+
+                if not token:
+                    # Server versi lama belum kirim token -> jangan lanjut,
+                    # supaya tidak "sukses" registrasi tapi ujung-ujungnya 401 terus
+                    self.server_url = old_server_url
+                    return {"success": False, "error": "Server tidak mengembalikan token. Pastikan server sudah menerapkan Sanctum."}
+
                 self.server_url = target_server_url
+                self.token = token
+
                 # Simpan permanen ke config
                 with open(self.config_path, "w") as f:
                     json.dump({
                         "device_id": self.device_id,
-                        "server_url": self.server_url
+                        "server_url": self.server_url,
+                        "token": self.token
                     }, f, indent=4)
                 return {"success": True, "device_id": device_id}
             
@@ -131,8 +172,19 @@ class DataSender:
         model = "Unknown"
         try:
             if platform.system() == "Windows":
-                manufacturer = subprocess.check_output('wmic computersystem get manufacturer').decode().split('\n')[1].strip()
-                model = subprocess.check_output('wmic computersystem get model').decode().split('\n')[1].strip()
+                # creationflags=CREATE_NO_WINDOW mencegah CMD popup sekilas muncul.
+                # Tanpa ini, setiap panggilan wmic (yang terjadi di SETIAP pengiriman
+                # data ke server) akan memunculkan jendela console hitam sekilas,
+                # karena aplikasi ini dibuild --windowed (tanpa console sendiri).
+                no_window = subprocess.CREATE_NO_WINDOW
+                manufacturer = subprocess.check_output(
+                    'wmic computersystem get manufacturer',
+                    creationflags=no_window
+                ).decode().split('\n')[1].strip()
+                model = subprocess.check_output(
+                    'wmic computersystem get model',
+                    creationflags=no_window
+                ).decode().split('\n')[1].strip()
         except:
             pass
 
@@ -175,6 +227,7 @@ class DataSender:
             response = requests.post(
                 self.server_url + "/app-usage",
                 json=payload,
+                headers=self._headers(),
                 timeout=10
             )
             return {"success": True, "status_code": response.status_code}
@@ -198,6 +251,7 @@ class DataSender:
             response = requests.post(
                 self.server_url + "/browsing-history",
                 json=payload,
+                headers=self._headers(),
                 timeout=15
             )
             return {"success": True, "status_code": response.status_code}
@@ -246,6 +300,7 @@ class DataSender:
         """Menghapus konfigurasi lokal (logout)"""
         self.device_id = None
         self.server_url = None
+        self.token = None
         if os.path.exists(self.config_path):
             try:
                 os.remove(self.config_path)
@@ -259,13 +314,14 @@ class DataSender:
         if not self.is_registered():
             return {"success": False, "error": "Not registered"}
             
-        # Gunakan base URL tanpa /api/monitoring jika perlu, 
-        # tapi di sini kita asumsikan server handle /config di monitoring path
+        # Endpoint ini sekarang mengenali device dari token (Authorization: Bearer),
+        # jadi tidak perlu lagi mengirim device_id sebagai parameter.
         config_url = f"{self.server_url}/config"
-        params = {"device_id": self.device_id}
         
         try:
-            response = requests.get(config_url, params=params, timeout=10)
+            response = requests.get(config_url, headers=self._headers(with_json=False), timeout=10)
+            if response.status_code == 401:
+                return {"success": False, "error": "Unauthorized - token tidak valid, perlu register ulang", "code": 401}
             if response.status_code == 200:
                 data = response.json()
                 # Ekstrak objek config dari respons: {"status": "success", "config": {...}}
@@ -314,6 +370,7 @@ class DataSender:
             response = requests.post(
                 self.server_url + "/screenshot",
                 json=payload,
+                headers=self._headers(),
                 timeout=30
             )
             return {"success": True, "status_code": response.status_code}
@@ -356,6 +413,7 @@ class DataSender:
             response = requests.post(
                 self.server_url + "/recording",
                 json=payload,
+                headers=self._headers(),
                 timeout=60
             )
             return {"success": True, "status_code": response.status_code}
@@ -382,6 +440,7 @@ class DataSender:
             response = requests.post(
                 self.server_url + "/upload-activity",
                 json=payload,
+                headers=self._headers(),
                 timeout=10
             )
             return {"success": True, "status_code": response.status_code}
@@ -408,6 +467,7 @@ class DataSender:
             response = requests.post(
                 self.server_url + "/idle-event",
                 json=payload,
+                headers=self._headers(),
                 timeout=10
             )
             return {"success": True, "status_code": response.status_code}
@@ -434,6 +494,7 @@ class DataSender:
             response = requests.post(
                 self.server_url + "/keystrokes",
                 json=payload,
+                headers=self._headers(),
                 timeout=15
             )
             return {"success": True, "status_code": response.status_code}
@@ -459,6 +520,7 @@ class DataSender:
             response = requests.post(
                 self.server_url + "/location",
                 json=payload,
+                headers=self._headers(),
                 timeout=10
             )
             return {"success": True, "status_code": response.status_code}
@@ -479,7 +541,7 @@ class DataSender:
         download_url = f"{base_url}/api/monitoring/downloadFile/{file_id}"
         
         try:
-            response = requests.get(download_url, timeout=60, stream=True)
+            response = requests.get(download_url, headers=self._headers(with_json=False), timeout=60, stream=True)
             
             if response.status_code == 200:
                 # Pastikan direktori tujuan ada
@@ -512,6 +574,7 @@ class DataSender:
             response = requests.post(
                 self.server_url + "/download-activity",
                 json=payload,
+                headers=self._headers(),
                 timeout=30
             )
             if response.status_code in [200, 201]:
@@ -522,3 +585,190 @@ class DataSender:
             return {"success": False, "error": "Connection refused"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    # =========================
+    # REMOTE CONTROL
+    # =========================
+    def fetch_pending_actions(self):
+        """
+        Mengambil daftar perintah remote control yang masih menunggu dieksekusi
+        (Shutdown / Restart / Send Messages) dari dashboard admin.
+        """
+        if not self.is_registered():
+            return {"success": False, "error": "Not registered"}
+
+        actions_url = f"{self.server_url}/actions"
+
+        try:
+            response = requests.get(actions_url, headers=self._headers(with_json=False), timeout=10)
+            if response.status_code == 401:
+                return {"success": False, "error": "Unauthorized - token tidak valid", "code": 401}
+            if response.status_code == 200:
+                data = response.json()
+                return {"success": True, "actions": data.get("actions", [])}
+            return {"success": False, "error": f"Status {response.status_code}"}
+        except requests.exceptions.ConnectionError:
+            return {"success": False, "error": "Connection refused - server not available"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def acknowledge_action(self, action_id, status):
+        """
+        Melaporkan hasil eksekusi perintah remote control ke server.
+        status hanya boleh 'completed' atau 'failed'.
+        """
+        if not self.is_registered():
+            return {"success": False, "error": "Not registered"}
+
+        ack_url = f"{self.server_url}/actions/{action_id}/ack"
+        payload = {"status": status}
+
+        try:
+            response = requests.post(ack_url, json=payload, headers=self._headers(), timeout=10)
+            if response.status_code == 200:
+                return {"success": True}
+            return {"success": False, "error": f"Status {response.status_code}"}
+        except requests.exceptions.ConnectionError:
+            return {"success": False, "error": "Connection refused - server not available"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # =========================
+    # REMOTE DESKTOP CONTROL (live screen + mouse/keyboard)
+    # =========================
+    def fetch_remote_status(self):
+        """Cek apakah admin sedang membuka sesi remote control untuk device ini."""
+        if not self.is_registered():
+            return {"success": False, "error": "Not registered"}
+
+        try:
+            response = requests.get(
+                f"{self.server_url}/remote/status",
+                headers=self._headers(with_json=False),
+                timeout=5
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return {"success": True, "remote_active": data.get("remote_active", False)}
+            return {"success": False, "error": f"Status {response.status_code}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def upload_remote_frame(self, image_base64, width, height):
+        """
+        Upload frame layar ke server. Response sekarang langsung berisi
+        antrian events (mouse/keyboard/terminate) yang perlu dieksekusi —
+        menggantikan panggilan fetch_remote_events() yang terpisah.
+        Ini yang paling signifikan mengurangi lag remote control.
+        """
+        if not self.is_registered():
+            return {"success": False, "error": "Not registered", "remote_active": False, "events": []}
+
+        payload = {
+            "image_base64": image_base64,
+            "screen_width": width,
+            "screen_height": height,
+        }
+
+        try:
+            response = requests.post(
+                f"{self.server_url}/remote/frame",
+                json=payload,
+                headers=self._headers(),
+                timeout=5
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    "success": True,
+                    "remote_active": data.get("remote_active", True),
+                    "events": data.get("events", []),
+                }
+            return {"success": False, "error": f"Status {response.status_code}", "remote_active": True, "events": []}
+        except Exception as e:
+            return {"success": False, "error": str(e), "remote_active": True, "events": []}
+
+    def fetch_remote_events(self):
+        """Ambil antrian event mouse/keyboard yang perlu dieksekusi."""
+        if not self.is_registered():
+            return {"success": False, "error": "Not registered"}
+
+        try:
+            response = requests.get(
+                f"{self.server_url}/remote/events",
+                headers=self._headers(with_json=False),
+                timeout=5
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return {"success": True, "events": data.get("events", [])}
+            return {"success": False, "error": f"Status {response.status_code}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def send_active_apps(self, apps_list):
+        """
+        Kirim snapshot aplikasi yang sedang terbuka SAAT INI (bukan riwayat).
+        Dipanggil berkala (setiap connection_check_interval, default 30 detik)
+        supaya dashboard admin bisa menampilkan kondisi "live".
+        """
+        payload = {
+            "device_info": self._get_system_info(),
+            "active_apps": apps_list,
+        }
+
+        try:
+            response = requests.post(
+                self.server_url + "/active-apps",
+                json=payload,
+                headers=self._headers(),
+                timeout=10
+            )
+            return {"success": response.status_code == 200, "status_code": response.status_code}
+        except requests.exceptions.ConnectionError:
+            return {"success": False, "error": "Connection refused - server not available"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def terminate_app(self, app_name):
+        """Kirim request terminate dari server (setelah admin klik Terminate di dashboard)."""
+        if not self.is_registered():
+            return {"success": False, "error": "Not registered"}
+
+        payload = {"app_name": app_name}
+
+        try:
+            response = requests.post(
+                self.server_url + "/terminate-app",
+                json=payload,
+                headers=self._headers(),
+                timeout=10
+            )
+            return {"success": response.status_code == 200}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def fetch_pending_terminate_actions(self):
+        """
+        Ambil device_actions dengan type 'Terminate App' yang masih in_progress.
+        Dipanggil tiap 5 detik oleh fast_action_loop di main_app.py supaya
+        terminate bisa jalan tanpa menunggu connection_check_interval (30 detik).
+        """
+        if not self.is_registered():
+            return {"success": False, "error": "Not registered", "actions": []}
+
+        try:
+            response = requests.get(
+                f"{self.server_url}/actions",
+                headers=self._headers(with_json=False),
+                timeout=5
+            )
+            if response.status_code == 200:
+                data    = response.json()
+                # Filter hanya Terminate App dari semua pending actions
+                actions = [a for a in data.get("actions", [])
+                           if a.get("action_type") == "Terminate App"]
+                return {"success": True, "actions": actions}
+            return {"success": False, "error": f"Status {response.status_code}", "actions": []}
+        except Exception as e:
+            return {"success": False, "error": str(e), "actions": []}
