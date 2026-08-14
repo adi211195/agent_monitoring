@@ -21,7 +21,7 @@ if %errorlevel% neq 0 (
 echo Python found! Installing dependencies...
 echo.
 
-python -m pip install psutil pywin32 requests --quiet
+python -m pip install -r requirements.txt --quiet
 
 if %errorlevel% neq 0 (
     echo.

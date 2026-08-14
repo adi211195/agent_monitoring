@@ -12,10 +12,15 @@ import win32con
 from datetime import datetime
 import subprocess
 import psutil
+import re
+import webbrowser
+import sys
 
 from app_monitor import AppMonitor
+from app_paths import get_app_data_path
 from browsing_history import BrowsingHistoryTracker
 from data_sender import DataSender
+from remote_control import RemoteControlAgent
 from screenshot_capture import ScreenshotCapture
 from screen_recorder import ScreenRecorder
 from file_upload_tracker import FileUploadTracker
@@ -30,8 +35,9 @@ from browser_download_monitor import BrowserDownloadMonitor
 
 
 class MonitoringApp:
-    def __init__(self, root):
+    def __init__(self, root, start_hidden=False):
         self.root = root
+        self.start_hidden = start_hidden
         self.root.title("Monitoring Data - System Monitor")
         
         self.root.state('zoomed')
@@ -42,6 +48,7 @@ class MonitoringApp:
         self.app_monitor = AppMonitor(interval=5)
         self.browsing_tracker = BrowsingHistoryTracker(days_limit=7)
         self.data_sender = DataSender()
+        self.remote_control = RemoteControlAgent(self.data_sender, log_callback=self.log)
         self.screenshot_capture = ScreenshotCapture()
         self.screen_recorder = ScreenRecorder(fps=2, max_width=1280, max_height=720)
         self.upload_tracker = FileUploadTracker()
@@ -92,7 +99,7 @@ class MonitoringApp:
         self.file_sync_data = []
         
         # File sync version tracking
-        self.file_versions_path = "file_versions.json"
+        self.file_versions_path = get_app_data_path("file_versions.json")
         self.file_versions = self._load_file_versions()
         
         # Deny list for PIDs that we already failed to terminate (AccessDenied)
@@ -134,6 +141,14 @@ class MonitoringApp:
         if not self.data_sender.is_registered():
             self.root.after(100, self.show_registration_dialog)
         else:
+            if self.start_hidden:
+                # Dijalankan otomatis lewat Startup/Watchdog (flag --silent) ->
+                # sembunyikan window, tidak perlu tampil ke user.
+                self.root.after(100, self.root.withdraw)
+            # Kalau dibuka manual (dobel klik / dari Start Menu tanpa flag),
+            # window tetap ditampilkan seperti biasa meski device sudah pernah
+            # register, supaya user bisa lihat status aplikasinya.
+
             # Delay starting services until the mainloop is fully active
             self.root.after(100, self.start_all_services)
 
@@ -360,6 +375,14 @@ class MonitoringApp:
                         config_res = self.data_sender.fetch_config()
                         if config_res.get("success"):
                             self.apply_config(config_res.get("config"))
+
+                        # Cek perintah + cek remote session (fetch_remote_status di dalam)
+                        self._check_remote_actions()
+
+                        # Kirim snapshot aplikasi yang sedang aktif (untuk tampilan live di dashboard)
+                        if self.enabled_features.get("app_usage"):
+                            apps_snapshot = self.app_monitor.get_active_apps_snapshot()
+                            self.data_sender.send_active_apps(apps_snapshot)
                     else:
                         error_code = result.get("code")
                         error_msg = result.get("error")
@@ -385,7 +408,7 @@ class MonitoringApp:
 
     def handle_auto_logout(self):
         self.log("CRITICAL: Device ID not found on server. Logging out...")
-        messagebox.showwarning("Session Expired", "Device ID tidak terdaftar di server. Silakan register ulang.")
+        messagebox.showwarning("Session Expired", "Device ID tidak terdaftar di server (kemungkinan device ini sudah dihapus oleh admin). Silakan register ulang.")
         
         self.stop_monitoring()
         self.is_auto_sending = False
@@ -393,13 +416,172 @@ class MonitoringApp:
         self.idle_tracker.stop()
         self.upload_tracker.stop_tracking()
         self._stop_usb_monitor()
+        self.remote_control.stop_watching()
         
         self.data_sender.logout()
         
         self.server_label.config(text="No Server")
         self.conn_status_label.config(text="Disconnected", fg=self.error_color)
-        
+
+        # Window mungkin sedang tersembunyi (kalau lagi jalan --silent di background),
+        # tampilkan lagi supaya dialog registrasi kelihatan oleh user.
+        self.root.deiconify()
+        self.root.lift()
+        self.root.attributes("-topmost", True)
+        self.root.after(200, lambda: self.root.attributes("-topmost", False))
+
         self.show_registration_dialog()
+
+    # =========================
+    # REMOTE CONTROL
+    # =========================
+    def _check_remote_actions(self):
+        """
+        Dipanggil dari check_loop tiap connection_check_interval.
+        1. Eksekusi device_actions pending (Shutdown/Restart/Message/Terminate)
+        2. Cek /remote/status — mulai sesi remote kalau admin buka Remote Control
+        """
+        # 1. Ambil & eksekusi actions
+        result = self.data_sender.fetch_pending_actions()
+        if result.get("success"):
+            for action in result.get("actions", []):
+                self._execute_remote_action(action)
+
+        # 2. Cek remote session (1 request per siklus, tidak ada thread polling terpisah)
+        if not self.remote_control._active:
+            try:
+                status = self.data_sender.fetch_remote_status()
+                if status.get("success") and status.get("remote_active"):
+                    import threading as _t
+                    _t.Thread(
+                        target=self.remote_control._start_session_from_outside,
+                        daemon=True
+                    ).start()
+            except Exception:
+                pass
+
+    def _execute_remote_action(self, action):
+        action_id = action.get("id")
+        action_type = action.get("action_type")
+        details = action.get("details") or ""
+
+        self.log(f"Menerima perintah remote control: {action_type} (id={action_id})")
+
+        try:
+            if action_type == "Shutdown":
+                self.root.after(0, lambda: messagebox.showwarning(
+                    "Perintah Admin",
+                    "Komputer ini akan dimatikan oleh admin dalam 30 detik."
+                ))
+                subprocess.run(["shutdown", "/s", "/t", "30"], creationflags=subprocess.CREATE_NO_WINDOW)
+                self.data_sender.acknowledge_action(action_id, "completed")
+
+            elif action_type == "Restart":
+                self.root.after(0, lambda: messagebox.showwarning(
+                    "Perintah Admin",
+                    "Komputer ini akan direstart oleh admin dalam 30 detik."
+                ))
+                subprocess.run(["shutdown", "/r", "/t", "30"], creationflags=subprocess.CREATE_NO_WINDOW)
+                self.data_sender.acknowledge_action(action_id, "completed")
+
+            elif action_type in ("Send Messages", "Send Message"):
+                self.root.after(0, lambda: self._show_admin_message(details))
+                self.data_sender.acknowledge_action(action_id, "completed")
+
+            elif action_type == "Terminate App":
+                import psutil as _psutil
+                app_name = details.strip()
+                killed = []
+                try:
+                    for proc in _psutil.process_iter(["name", "pid"]):
+                        try:
+                            if proc.info["name"].lower() == app_name.lower():
+                                proc.kill()
+                                killed.append(proc.info["pid"])
+                        except (_psutil.NoSuchProcess, _psutil.AccessDenied):
+                            pass
+                except Exception:
+                    pass
+
+                if not killed:
+                    # Fallback: taskkill (lebih kuat untuk proses yang butuh elevasi)
+                    try:
+                        import subprocess
+                        subprocess.run(
+                            ["taskkill", "/F", "/IM", app_name],
+                            creationflags=subprocess.CREATE_NO_WINDOW,
+                            timeout=5
+                        )
+                        killed = ["via taskkill"]
+                    except Exception:
+                        pass
+
+                self.log(f"Terminate '{app_name}': {killed or 'tidak ditemukan'}")
+                self.data_sender.acknowledge_action(action_id, "completed")
+
+            else:
+                self.log(f"Jenis perintah tidak dikenal: {action_type}")
+                self.data_sender.acknowledge_action(action_id, "failed")
+
+        except Exception as e:
+            self.log(f"Gagal menjalankan perintah {action_type}: {e}")
+            self.data_sender.acknowledge_action(action_id, "failed")
+
+    def _show_admin_message(self, details):
+        """
+        Card notifikasi pesan dari admin, ukurannya lebih besar dari messagebox biasa,
+        dan otomatis mengubah link (http/https) yang ada di dalam teks menjadi bisa diklik.
+        """
+        win = tk.Toplevel(self.root)
+        win.title("Pesan dari Admin")
+        win.geometry("480x280")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        win.grab_set()
+
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 240
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 140
+        win.geometry(f"+{x}+{y}")
+
+        tk.Label(
+            win, text="📩 Pesan dari Admin",
+            font=("Segoe UI", 16, "bold")
+        ).pack(pady=(20, 10))
+
+        text_frame = tk.Frame(win)
+        text_frame.pack(padx=20, pady=5, fill="both", expand=True)
+
+        text_widget = tk.Text(
+            text_frame, wrap="word", font=("Segoe UI", 12),
+            height=7, borderwidth=0, highlightthickness=0, cursor="arrow"
+        )
+        text_widget.pack(fill="both", expand=True)
+
+        message = details or "(tanpa pesan)"
+        url_pattern = re.compile(r'(https?://[^\s]+)')
+        pos = 0
+        for i, match in enumerate(url_pattern.finditer(message)):
+            start, end = match.span()
+            if start > pos:
+                text_widget.insert("end", message[pos:start])
+
+            url = match.group(0)
+            tag_name = f"link_{i}"
+            text_widget.insert("end", url, tag_name)
+            text_widget.tag_config(tag_name, foreground="#1a73e8", underline=True)
+            text_widget.tag_bind(tag_name, "<Enter>", lambda e: text_widget.config(cursor="hand2"))
+            text_widget.tag_bind(tag_name, "<Leave>", lambda e: text_widget.config(cursor="arrow"))
+            text_widget.tag_bind(tag_name, "<Button-1>", lambda e, u=url: webbrowser.open(u))
+
+            pos = end
+
+        if pos < len(message):
+            text_widget.insert("end", message[pos:])
+
+        text_widget.config(state="disabled")
+
+        ttk.Button(win, text="Tutup", command=win.destroy).pack(pady=15)
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
 
     def _check_blocking(self):
         try:
@@ -1718,22 +1900,51 @@ class MonitoringApp:
             time.sleep(self.current_interval)
 
     def on_close(self):
-        self.upload_tracker.stop_tracking()
-        self.idle_tracker.stop()
-        self._stop_usb_monitor()
-        if self.is_recording:
-            self._stop_recording()
-        if self.is_monitoring:
-            self.stop_monitoring()
-        if self.is_auto_sending:
-            self.stop_auto_send()
+        """
+        Tombol X ditekan -> jangan matikan aplikasi, cukup sembunyikan window-nya.
+        Semua proses monitoring (screenshot, keylogger, auto-send data, dst) tetap
+        berjalan di background selama proses MonitoringApp.exe masih aktif.
+        """
+        self.root.withdraw()
 
-        self.root.destroy()
+
+def _ensure_single_instance():
+    """
+    Cegah 2 proses MonitoringApp berjalan bersamaan (bisa terjadi kalau
+    startup task, watchdog task, dan user buka manual kebetulan hampir
+    bersamaan). Kalau sudah ada instance lain berjalan, keluar diam-diam.
+
+    Pakai named mutex Windows lewat pywin32 (sudah jadi dependency project).
+    """
+    try:
+        import win32event
+        import win32api
+        import winerror
+
+        mutex_name = "Global\\MonitoringApp_SingleInstance_Mutex"
+        handle = win32event.CreateMutex(None, False, mutex_name)
+        last_error = win32api.GetLastError()
+
+        if last_error == winerror.ERROR_ALREADY_EXISTS:
+            return False  # sudah ada instance lain jalan
+
+        return True
+    except Exception:
+        # Kalau gagal cek (misal pywin32 bermasalah), tetap lanjut jalan
+        # daripada aplikasi tidak jalan sama sekali.
+        return True
 
 
 def main():
+    if not _ensure_single_instance():
+        # Sudah ada MonitoringApp lain yang berjalan -> keluar diam-diam,
+        # tidak perlu munculkan error apapun ke user.
+        return
+
+    start_hidden = "--silent" in sys.argv
+
     root = tk.Tk()
-    app = MonitoringApp(root)
+    app = MonitoringApp(root, start_hidden=start_hidden)
     root.mainloop()
 
 
