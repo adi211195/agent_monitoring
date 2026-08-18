@@ -131,13 +131,12 @@ class RemoteControlAgent:
 
         self._active = True
         self._stop_flag.clear()
-        _hide_cursor()
-        self.log("Remote control: sesi dimulai")
+        # VIEW-ONLY: tidak hide cursor di agent karena admin tidak kontrol mouse
+        self.log("Remote control: sesi dimulai (view-only)")
         try:
             self._run_active_session()
         finally:
             self._active = False
-            _show_cursor()
             self.log("Remote control: sesi selesai")
 
     def _run_active_session(self):
