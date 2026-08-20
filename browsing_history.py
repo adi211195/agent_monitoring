@@ -7,12 +7,13 @@ import json
 from datetime import datetime, timedelta
 from typing import List, Dict
 from urllib.parse import urlparse
+from app_paths import get_app_data_path
 
 
 class BrowsingHistoryTracker:
     def __init__(self, days_limit=7):
         self.days_limit = days_limit
-        self.config_path = "history_config.json"
+        self.config_path = get_app_data_path("history_config.json")
         self.last_sent_time = self._load_last_sent_time()
 
     def _load_last_sent_time(self):
