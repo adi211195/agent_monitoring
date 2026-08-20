@@ -1,10 +1,11 @@
 import json
 import os
 import threading
+from app_paths import get_app_data_path
 
 class DataPersistence:
-    def __init__(self, filename="offline_queue.json"):
-        self.filename = filename
+    def __init__(self, filename=None):
+        self.filename = filename or get_app_data_path("offline_queue.json")
         self.lock = threading.Lock()
         self._ensure_file_exists()
 

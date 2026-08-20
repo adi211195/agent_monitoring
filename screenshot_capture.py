@@ -3,11 +3,12 @@ import base64
 import uuid
 from datetime import datetime
 from PIL import Image, ImageGrab
+from app_paths import get_app_data_path
 
 
 class ScreenshotCapture:
-    def __init__(self, save_dir="screenshots", max_width=1280, max_height=720, quality=50):
-        self.save_dir = save_dir
+    def __init__(self, save_dir=None, max_width=1280, max_height=720, quality=50):
+        self.save_dir = save_dir or get_app_data_path("screenshots")
         self.max_width = max_width
         self.max_height = max_height
         self.quality = quality
