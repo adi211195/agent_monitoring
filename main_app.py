@@ -1676,6 +1676,7 @@ class MonitoringApp:
 
         self._safe_ui_call(self.log, f"Attempting to send {len(queue)} pending offline items...")
         
+        failed_items = []  
         success_indices = []
         for i, item in enumerate(queue):
             data_type = item["data_type"]
@@ -1704,8 +1705,11 @@ class MonitoringApp:
 
                 if result.get("success"):
                     success_indices.append(i)
+                else:
+                    failed_items.append((i, data_type))
+                    self._safe_ui_call(self.log, f"Failed to send offline item {data_type}: {result.get('error')}")
             except:
-                pass
+                failed_items.append((i, data_type))
 
         for index in sorted(success_indices, reverse=True):
             self.persistence.remove_item(index)
