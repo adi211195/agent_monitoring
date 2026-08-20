@@ -7,11 +7,12 @@ import time
 import base64
 import uuid
 from datetime import datetime
+from app_paths import get_app_data_path
 
 
 class ScreenRecorder:
-    def __init__(self, save_dir="recordings", fps=2, max_width=1280, max_height=720):
-        self.save_dir = save_dir
+    def __init__(self, save_dir=None, fps=2, max_width=1280, max_height=720):
+        self.save_dir = save_dir or get_app_data_path("recordings")
         self.fps = fps
         self.max_width = max_width
         self.max_height = max_height

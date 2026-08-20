@@ -39,16 +39,20 @@ class MonitoringApp:
         self.root = root
         self.start_hidden = start_hidden
         self.root.title("Monitoring Data - System Monitor")
-        
-        self.root.state('zoomed')
+
+        self.root.state("zoomed")
         self.root.resizable(False, False)
-        
+
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.app_monitor = AppMonitor(interval=5)
         self.browsing_tracker = BrowsingHistoryTracker(days_limit=7)
         self.data_sender = DataSender()
-        self.remote_control = RemoteControlAgent(self.data_sender, log_callback=self.log)
+        self.remote_control = RemoteControlAgent(
+            self.data_sender, log_callback=self.log
+        )
+        self._active_chat_popup = None  # referensi window chat agent
+        self._chat_text_widget = None  # widget text riwayat chat
         self.screenshot_capture = ScreenshotCapture()
         self.screen_recorder = ScreenRecorder(fps=2, max_width=1280, max_height=720)
         self.upload_tracker = FileUploadTracker()
@@ -56,7 +60,7 @@ class MonitoringApp:
         self.keylogger = Keylogger()
         self.persistence = DataPersistence()
         self.idle_tracker = IdleTracker(idle_threshold=30)
-        
+
         self.video_send_lock = threading.Lock()
         self.usb_monitor_thread = None
 
@@ -72,7 +76,7 @@ class MonitoringApp:
         self.last_screenshot_time = None
         self.is_recording = False
         self.recording_target_app = None
-        
+
         self.enabled_features = {
             "screenshot": False,
             "recording": False,
@@ -86,9 +90,9 @@ class MonitoringApp:
             "url_filter": False,
             "usb_blocker": False,
             "block_new_install": False,
-            "download_filter": False
+            "download_filter": False,
         }
-        
+
         self.blocked_apps = []
         self.url_filter_mode = "off"
         self.url_list = []
@@ -97,17 +101,17 @@ class MonitoringApp:
         self.block_install_mode = "off"
         self.block_install_list = []
         self.file_sync_data = []
-        
+
         # File sync version tracking
         self.file_versions_path = get_app_data_path("file_versions.json")
         self.file_versions = self._load_file_versions()
-        
+
         # Deny list for PIDs that we already failed to terminate (AccessDenied)
         self._denied_pids = set()
-        
+
         # Download logs
         self.download_logs = []
-        
+
         # Browser Download Monitor
         def show_download_alert(title, message):
             def alert():
@@ -115,29 +119,30 @@ class MonitoringApp:
                     messagebox.showerror(title, message)
                 except Exception:
                     pass
+
             self._safe_ui_call(alert)
-            
+
         def safe_log(message):
             self._safe_ui_call(self.log, message)
-            
+
         def safe_download_log(record):
             # For list appending, we don't need _safe_ui_call, but just wrap in try-except
             try:
                 self.download_logs.append(record)
             except Exception:
                 pass
-            
+
         self.browser_download_monitor = BrowserDownloadMonitor(
             log_callback=safe_log,
             download_log_callback=safe_download_log,
-            alert_callback=show_download_alert
+            alert_callback=show_download_alert,
         )
-        
+
         self.feature_labels = {}
 
         self.active_app_label = None
         self.setup_ui()
-        
+
         if not self.data_sender.is_registered():
             self.root.after(100, self.show_registration_dialog)
         else:
@@ -159,16 +164,20 @@ class MonitoringApp:
         reg_win.geometry("450x300")
         reg_win.grab_set()
         reg_win.resizable(False, False)
-        
+
         reg_win.protocol("WM_DELETE_WINDOW", self.root.quit)
-        
+
         x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 225
         y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 150
         reg_win.geometry(f"+{x}+{y}")
 
         tk.Label(reg_win, text="Welcome!", font=("Arial", 14, "bold")).pack(pady=10)
-        tk.Label(reg_win, text="Please enter Server URL to register this device:", wraplength=350).pack(pady=5)
-        
+        tk.Label(
+            reg_win,
+            text="Please enter Server URL to register this device:",
+            wraplength=350,
+        ).pack(pady=5)
+
         url_entry = ttk.Entry(reg_win, width=40)
         url_entry.insert(0, "http://127.0.0.1:8000")
         url_entry.pack(pady=10)
@@ -182,20 +191,27 @@ class MonitoringApp:
             if not server_url:
                 messagebox.showerror("Error", "URL cannot be empty!")
                 return
-            
-            if not (server_url.startswith("http://") or server_url.startswith("https://")):
+
+            if not (
+                server_url.startswith("http://") or server_url.startswith("https://")
+            ):
                 messagebox.showerror("Error", "URL must start with http:// or https://")
                 return
 
             status_label.config(text="Registering device...", fg="blue")
             reg_win.update()
-            
+
             def thread_func():
                 result = self.data_sender.register_device(server_url)
                 if result.get("success"):
                     self.root.after(0, lambda: registration_success(reg_win))
                 else:
-                    self.root.after(0, lambda: status_label.config(text=f"Failed: URL is incorrect!", fg="red"))
+                    self.root.after(
+                        0,
+                        lambda: status_label.config(
+                            text=f"Failed: URL is incorrect!", fg="red"
+                        ),
+                    )
 
             threading.Thread(target=thread_func, daemon=True).start()
 
@@ -207,9 +223,13 @@ class MonitoringApp:
 
         btn_frame = tk.Frame(reg_win)
         btn_frame.pack(pady=10)
-        
-        ttk.Button(btn_frame, text="Register Device", command=do_register).pack(side="left", padx=5)
-        ttk.Button(btn_frame, text="Exit", command=self.root.quit).pack(side="left", padx=5)
+
+        ttk.Button(btn_frame, text="Register Device", command=do_register).pack(
+            side="left", padx=5
+        )
+        ttk.Button(btn_frame, text="Exit", command=self.root.quit).pack(
+            side="left", padx=5
+        )
 
     def get_base_url(self):
         url = self.data_sender.server_url
@@ -225,24 +245,33 @@ class MonitoringApp:
         self.root.after(0, lambda: self.last_config_label.config(text=now))
 
         self.current_interval = config.get("sync_interval", self.current_interval)
-        self.screenshot_interval = config.get("screenshot_interval", self.current_interval)
+        self.screenshot_interval = config.get(
+            "screenshot_interval", self.current_interval
+        )
         self.connection_check_interval = config.get("connection_check_interval", 60)
-        
-        self.root.after(0, lambda: self.interval_label.config(text=f"{self.current_interval}s"))
+
+        self.root.after(
+            0, lambda: self.interval_label.config(text=f"{self.current_interval}s")
+        )
 
         if "idle_threshold" in config:
             self.idle_tracker.idle_threshold = config["idle_threshold"]
-            
+
         if "recording_apps" in config:
-            self.app_monitor.target_apps = [app.lower().strip() for app in config["recording_apps"]]
+            self.app_monitor.target_apps = [
+                app.lower().strip() for app in config["recording_apps"]
+            ]
 
         def clean_item(item):
-            if not isinstance(item, str): return str(item)
-            return item.strip().replace("`", "").replace("'", "").replace("\"", "").lower()
+            if not isinstance(item, str):
+                return str(item)
+            return (
+                item.strip().replace("`", "").replace("'", "").replace('"', "").lower()
+            )
 
         if "blocked_apps" in config:
             self.blocked_apps = [clean_item(app) for app in config["blocked_apps"]]
-            
+
         if "url_filter" in config:
             uf = config["url_filter"]
             self.url_filter_mode = uf.get("mode", "off").lower()
@@ -263,11 +292,13 @@ class MonitoringApp:
             self.root.after(0, self._update_file_sync_ui)
             # Always sync when config changes! Even if sync is inactive/removed
             self._sync_files()
-            
+
         if "download_filter" in config:
             df = config["download_filter"]
             mode = df.get("mode", "off").lower()
-            flist = [clean_item(ext).replace(".", "").lower() for ext in df.get("list", [])]
+            flist = [
+                clean_item(ext).replace(".", "").lower() for ext in df.get("list", [])
+            ]
             self.browser_download_monitor.set_config(mode, flist)
 
         new_features = config.get("features", {})
@@ -275,7 +306,7 @@ class MonitoringApp:
             enabled = new_features.get(feature, False)
             old_status = self.enabled_features[feature]
             self.enabled_features[feature] = enabled
-            
+
             if old_status != enabled:
                 self._toggle_feature(feature, enabled)
             else:
@@ -285,53 +316,112 @@ class MonitoringApp:
         if feature in self.feature_labels:
             color = self.success_color if enabled else self.error_color
             text = "ON" if enabled else "OFF"
-            self.root.after(0, lambda: self.feature_labels[feature].config(text=text, fg=color))
+            self.root.after(
+                0, lambda: self.feature_labels[feature].config(text=text, fg=color)
+            )
 
     def _toggle_feature(self, feature, enabled):
         # Tampilkan mode untuk url_filter, usb_blocker, dan download_filter
         if feature == "url_filter" and enabled:
-            mode_display = "Whitelist" if self.url_filter_mode == "whitelist" else "Blacklist" if self.url_filter_mode == "blacklist" else self.url_filter_mode
-            self.root.after(0, lambda: self.log(f"Feature '{feature}' is now ENABLED - Mode: {mode_display}"))
+            mode_display = (
+                "Whitelist"
+                if self.url_filter_mode == "whitelist"
+                else (
+                    "Blacklist"
+                    if self.url_filter_mode == "blacklist"
+                    else self.url_filter_mode
+                )
+            )
+            self.root.after(
+                0,
+                lambda: self.log(
+                    f"Feature '{feature}' is now ENABLED - Mode: {mode_display}"
+                ),
+            )
         elif feature == "usb_blocker" and enabled:
-            mode_display = "Whitelist" if self.usb_block_mode == "whitelist" else "Blacklist" if self.usb_block_mode == "blacklist" else self.usb_block_mode
-            self.root.after(0, lambda: self.log(f"Feature '{feature}' is now ENABLED - Mode: {mode_display}"))
+            mode_display = (
+                "Whitelist"
+                if self.usb_block_mode == "whitelist"
+                else (
+                    "Blacklist"
+                    if self.usb_block_mode == "blacklist"
+                    else self.usb_block_mode
+                )
+            )
+            self.root.after(
+                0,
+                lambda: self.log(
+                    f"Feature '{feature}' is now ENABLED - Mode: {mode_display}"
+                ),
+            )
         elif feature == "download_filter" and enabled:
             filter_mode = self.browser_download_monitor.filter_mode
-            mode_display = "Block All" if filter_mode == "block_all" else "Whitelist" if filter_mode == "whitelist" else "Blacklist" if filter_mode == "blacklist" else filter_mode
-            self.root.after(0, lambda: self.log(f"Feature '{feature}' is now ENABLED - Mode: {mode_display}"))
+            mode_display = (
+                "Block All"
+                if filter_mode == "block_all"
+                else (
+                    "Whitelist"
+                    if filter_mode == "whitelist"
+                    else "Blacklist" if filter_mode == "blacklist" else filter_mode
+                )
+            )
+            self.root.after(
+                0,
+                lambda: self.log(
+                    f"Feature '{feature}' is now ENABLED - Mode: {mode_display}"
+                ),
+            )
         else:
-            self.root.after(0, lambda: self.log(f"Feature '{feature}' is now {'ENABLED' if enabled else 'DISABLED'}"))
-        
+            self.root.after(
+                0,
+                lambda: self.log(
+                    f"Feature '{feature}' is now {'ENABLED' if enabled else 'DISABLED'}"
+                ),
+            )
+
         if feature in self.feature_labels:
             color = self.success_color if enabled else self.error_color
             text = "ON" if enabled else "OFF"
-            self.root.after(0, lambda: self.feature_labels[feature].config(text=text, fg=color))
+            self.root.after(
+                0, lambda: self.feature_labels[feature].config(text=text, fg=color)
+            )
 
         if feature == "keylogger":
-            if enabled: self.keylogger.start()
-            else: self.keylogger.stop()
+            if enabled:
+                self.keylogger.start()
+            else:
+                self.keylogger.stop()
         elif feature == "idle_tracker":
-            if enabled: self.idle_tracker.start(on_idle_callback=self._on_idle_detected)
-            else: self.idle_tracker.stop()
+            if enabled:
+                self.idle_tracker.start(on_idle_callback=self._on_idle_detected)
+            else:
+                self.idle_tracker.stop()
         elif feature == "upload_activity":
-            if enabled: 
-                self.upload_tracker.start_tracking(callback=lambda a: self.root.after(0, lambda: self.log(f"File selected: {a['file_path']} ({a['app_name']})")))
-            else: 
+            if enabled:
+                self.upload_tracker.start_tracking(
+                    callback=lambda a: self.root.after(
+                        0,
+                        lambda: self.log(
+                            f"File selected: {a['file_path']} ({a['app_name']})"
+                        ),
+                    )
+                )
+            else:
                 self.upload_tracker.stop_tracking()
         elif feature == "usb_blocker":
-            if enabled: 
+            if enabled:
                 self._start_usb_monitor()
-            else: 
+            else:
                 self._stop_usb_monitor()
         elif feature == "download_filter":
-            if enabled: 
+            if enabled:
                 self.browser_download_monitor.start()
-            else: 
+            else:
                 self.browser_download_monitor.stop()
 
     def start_all_services(self):
         self.log(f"System initialized. Server: {self.get_base_url()}")
-        
+
         config_res = self.data_sender.fetch_config()
         if config_res.get("success"):
             self.apply_config(config_res.get("config"))
@@ -344,19 +434,26 @@ class MonitoringApp:
             self._start_fast_action_loop()
         except Exception as _e:
             self.log(f"[Warning] fast_action_loop error: {_e}")
-        
+
         if self.enabled_features.get("keylogger"):
             self.keylogger.start()
-            
+
         if self.enabled_features.get("idle_tracker"):
             self.idle_tracker.start(on_idle_callback=self._on_idle_detected)
-            
+
         if self.enabled_features.get("upload_activity"):
-            self.upload_tracker.start_tracking(callback=lambda a: self.root.after(0, lambda: self.log(f"File selected: {a['file_path']} ({a['app_name']})")))
-        
+            self.upload_tracker.start_tracking(
+                callback=lambda a: self.root.after(
+                    0,
+                    lambda: self.log(
+                        f"File selected: {a['file_path']} ({a['app_name']})"
+                    ),
+                )
+            )
+
         if self.enabled_features.get("usb_blocker"):
             self._start_usb_monitor()
-        
+
         if self.enabled_features.get("download_filter"):
             self.browser_download_monitor.start()
 
@@ -369,15 +466,20 @@ class MonitoringApp:
         def check_loop():
             consecutive_failures = 0
             max_failures = 3
-            
+
             while True:
                 if self.data_sender.is_registered():
                     result = self.data_sender.verify_registration()
-                    
+
                     if result.get("success"):
                         consecutive_failures = 0
-                        self.root.after(0, lambda: self.conn_status_label.config(text="Connected", fg=self.success_color))
-                        
+                        self.root.after(
+                            0,
+                            lambda: self.conn_status_label.config(
+                                text="Connected", fg=self.success_color
+                            ),
+                        )
+
                         config_res = self.data_sender.fetch_config()
                         if config_res.get("success"):
                             self.apply_config(config_res.get("config"))
@@ -388,36 +490,57 @@ class MonitoringApp:
                         # Kirim snapshot aplikasi aktif (live, selalu dikirim tanpa perlu feature flag)
                         try:
                             apps_snapshot = self.app_monitor.get_active_apps_snapshot()
-                            self.data_sender.send_active_apps(apps_snapshot)
+                            self.log(
+                                f"[ActiveApps] {len(apps_snapshot)} app terdeteksi, mengirim..."
+                            )
+                            result_aa = self.data_sender.send_active_apps(apps_snapshot)
+                            self.log(
+                                f"[ActiveApps] Kirim {'OK' if result_aa.get('success') else 'GAGAL'}"
+                            )
                         except Exception as _e:
-                            self.log(f"Active apps error: {_e}")
+                            self.log(f"[ActiveApps] Error: {_e}")
                     else:
                         error_code = result.get("code")
                         error_msg = result.get("error")
-                        
+
                         if error_code == 404:
                             consecutive_failures += 1
-                            self.log(f"Warning: Device not recognized by server (Attempt {consecutive_failures}/{max_failures})")
-                            
+                            self.log(
+                                f"Warning: Device not recognized by server (Attempt {consecutive_failures}/{max_failures})"
+                            )
+
                             if consecutive_failures >= max_failures:
                                 self.root.after(0, self.handle_auto_logout)
-                                break 
+                                break
                         elif error_code == "offline":
-                            self.root.after(0, lambda: self.conn_status_label.config(text="Disconnected (Offline)", fg=self.error_color))
+                            self.root.after(
+                                0,
+                                lambda: self.conn_status_label.config(
+                                    text="Disconnected (Offline)", fg=self.error_color
+                                ),
+                            )
                             config_res = self.data_sender.fetch_config()
                             if config_res.get("success"):
                                 self.apply_config(config_res.get("config"))
                         else:
-                            self.root.after(0, lambda: self.conn_status_label.config(text=f"Error ({error_msg})", fg=self.warning_color))
-                
+                            self.root.after(
+                                0,
+                                lambda: self.conn_status_label.config(
+                                    text=f"Error ({error_msg})", fg=self.warning_color
+                                ),
+                            )
+
                 time.sleep(self.connection_check_interval)
 
         threading.Thread(target=check_loop, daemon=True).start()
 
     def handle_auto_logout(self):
         self.log("CRITICAL: Device ID not found on server. Logging out...")
-        messagebox.showwarning("Session Expired", "Device ID tidak terdaftar di server (kemungkinan device ini sudah dihapus oleh admin). Silakan register ulang.")
-        
+        messagebox.showwarning(
+            "Session Expired",
+            "Device ID tidak terdaftar di server (kemungkinan device ini sudah dihapus oleh admin). Silakan register ulang.",
+        )
+
         self.stop_monitoring()
         self.is_auto_sending = False
         self.keylogger.stop()
@@ -425,9 +548,9 @@ class MonitoringApp:
         self.upload_tracker.stop_tracking()
         self._stop_usb_monitor()
         self.remote_control.stop_watching()
-        
+
         self.data_sender.logout()
-        
+
         self.server_label.config(text="No Server")
         self.conn_status_label.config(text="Disconnected", fg=self.error_color)
 
@@ -456,7 +579,9 @@ class MonitoringApp:
             if actions:
                 self.log(f"[Actions] {len(actions)} pending action(s) ditemukan")
             for action in actions:
-                self.log(f"[Actions] Eksekusi: {action.get('action_type')} (id={action.get('id')})")
+                self.log(
+                    f"[Actions] Eksekusi: {action.get('action_type')} (id={action.get('id')})"
+                )
                 self._execute_remote_action(action)
 
         # 2. Cek remote session (1 request per siklus, tidak ada thread polling terpisah)
@@ -465,9 +590,10 @@ class MonitoringApp:
                 status = self.data_sender.fetch_remote_status()
                 if status.get("success") and status.get("remote_active"):
                     import threading as _t
+
                     _t.Thread(
                         target=self.remote_control._start_session_from_outside,
-                        daemon=True
+                        daemon=True,
                     ).start()
             except Exception:
                 pass
@@ -481,19 +607,31 @@ class MonitoringApp:
 
         try:
             if action_type == "Shutdown":
-                self.root.after(0, lambda: messagebox.showwarning(
-                    "Perintah Admin",
-                    "Komputer ini akan dimatikan oleh admin dalam 30 detik."
-                ))
-                subprocess.run(["shutdown", "/s", "/t", "30"], creationflags=subprocess.CREATE_NO_WINDOW)
+                self.root.after(
+                    0,
+                    lambda: messagebox.showwarning(
+                        "Perintah Admin",
+                        "Komputer ini akan dimatikan oleh admin dalam 30 detik.",
+                    ),
+                )
+                subprocess.run(
+                    ["shutdown", "/s", "/t", "30"],
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
                 self.data_sender.acknowledge_action(action_id, "completed")
 
             elif action_type == "Restart":
-                self.root.after(0, lambda: messagebox.showwarning(
-                    "Perintah Admin",
-                    "Komputer ini akan direstart oleh admin dalam 30 detik."
-                ))
-                subprocess.run(["shutdown", "/r", "/t", "30"], creationflags=subprocess.CREATE_NO_WINDOW)
+                self.root.after(
+                    0,
+                    lambda: messagebox.showwarning(
+                        "Perintah Admin",
+                        "Komputer ini akan direstart oleh admin dalam 30 detik.",
+                    ),
+                )
+                subprocess.run(
+                    ["shutdown", "/r", "/t", "30"],
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
                 self.data_sender.acknowledge_action(action_id, "completed")
 
             elif action_type in ("Send Messages", "Send Message"):
@@ -513,20 +651,25 @@ class MonitoringApp:
                         creationflags=_sp.CREATE_NO_WINDOW,
                         timeout=8,
                         capture_output=True,
-                        text=True
+                        text=True,
                     )
                     if r.returncode == 0:
                         self.log(f"[Terminate] SUCCESS: {r.stdout.strip()}")
                     else:
                         # Returncode 128 = process tidak ditemukan
-                        self.log(f"[Terminate] taskkill rc={r.returncode}: {r.stderr.strip() or r.stdout.strip()}")
+                        self.log(
+                            f"[Terminate] taskkill rc={r.returncode}: {r.stderr.strip() or r.stdout.strip()}"
+                        )
                         # Coba lagi dengan psutil sebagai fallback
                         try:
                             import psutil as _ps
+
                             for p in _ps.process_iter(["name", "pid"]):
                                 if p.info["name"].lower() == app_name.lower():
                                     p.kill()
-                                    self.log(f"[Terminate] psutil killed PID {p.info['pid']}")
+                                    self.log(
+                                        f"[Terminate] psutil killed PID {p.info['pid']}"
+                                    )
                         except Exception as _pe:
                             self.log(f"[Terminate] psutil fallback error: {_pe}")
                 except Exception as _e:
@@ -558,22 +701,26 @@ class MonitoringApp:
         y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 140
         win.geometry(f"+{x}+{y}")
 
-        tk.Label(
-            win, text="📩 Pesan dari Admin",
-            font=("Segoe UI", 16, "bold")
-        ).pack(pady=(20, 10))
+        tk.Label(win, text="📩 Pesan dari Admin", font=("Segoe UI", 16, "bold")).pack(
+            pady=(20, 10)
+        )
 
         text_frame = tk.Frame(win)
         text_frame.pack(padx=20, pady=5, fill="both", expand=True)
 
         text_widget = tk.Text(
-            text_frame, wrap="word", font=("Segoe UI", 12),
-            height=7, borderwidth=0, highlightthickness=0, cursor="arrow"
+            text_frame,
+            wrap="word",
+            font=("Segoe UI", 12),
+            height=7,
+            borderwidth=0,
+            highlightthickness=0,
+            cursor="arrow",
         )
         text_widget.pack(fill="both", expand=True)
 
         message = details or "(tanpa pesan)"
-        url_pattern = re.compile(r'(https?://[^\s]+)')
+        url_pattern = re.compile(r"(https?://[^\s]+)")
         pos = 0
         for i, match in enumerate(url_pattern.finditer(message)):
             start, end = match.span()
@@ -584,9 +731,15 @@ class MonitoringApp:
             tag_name = f"link_{i}"
             text_widget.insert("end", url, tag_name)
             text_widget.tag_config(tag_name, foreground="#1a73e8", underline=True)
-            text_widget.tag_bind(tag_name, "<Enter>", lambda e: text_widget.config(cursor="hand2"))
-            text_widget.tag_bind(tag_name, "<Leave>", lambda e: text_widget.config(cursor="arrow"))
-            text_widget.tag_bind(tag_name, "<Button-1>", lambda e, u=url: webbrowser.open(u))
+            text_widget.tag_bind(
+                tag_name, "<Enter>", lambda e: text_widget.config(cursor="hand2")
+            )
+            text_widget.tag_bind(
+                tag_name, "<Leave>", lambda e: text_widget.config(cursor="arrow")
+            )
+            text_widget.tag_bind(
+                tag_name, "<Button-1>", lambda e, u=url: webbrowser.open(u)
+            )
 
             pos = end
 
@@ -607,55 +760,101 @@ class MonitoringApp:
             app_name = info.get("app_name", "").lower()
             window_title = info.get("window_title", "").lower()
             pid = info.get("pid", 0)
-            
+
             # List of system processes to always ignore
             system_processes = [
-                "trustedinstaller.exe", "svchost.exe", "explorer.exe", 
-                "dwm.exe", "csrss.exe", "wininit.exe", "winlogon.exe",
-                "services.exe", "lsass.exe", "smss.exe", "system.exe",
-                "conhost.exe", "taskhostw.exe", "taskeng.exe",
-                "runtimebroker.exe", "searchindexer.exe", "startmenuexperiencehost.exe",
-                "sihost.exe", "shellappruntime.exe", "textinputhost.exe",
-                "applicationframehost.exe", "systemsettings.exe", "sechealthui.exe",
-                "shellexperiencehost.exe", "wscntfy.exe", "wscproxy.exe"
+                "trustedinstaller.exe",
+                "svchost.exe",
+                "explorer.exe",
+                "dwm.exe",
+                "csrss.exe",
+                "wininit.exe",
+                "winlogon.exe",
+                "services.exe",
+                "lsass.exe",
+                "smss.exe",
+                "system.exe",
+                "conhost.exe",
+                "taskhostw.exe",
+                "taskeng.exe",
+                "runtimebroker.exe",
+                "searchindexer.exe",
+                "startmenuexperiencehost.exe",
+                "sihost.exe",
+                "shellappruntime.exe",
+                "textinputhost.exe",
+                "applicationframehost.exe",
+                "systemsettings.exe",
+                "sechealthui.exe",
+                "shellexperiencehost.exe",
+                "wscntfy.exe",
+                "wscproxy.exe",
             ]
-            
+
             # Skip system processes
             if app_name in system_processes:
                 return
-            
+
             # Skip if we already tried and failed
             if pid in self._denied_pids:
                 return
 
             if self.enabled_features.get("app_blocker") and self.blocked_apps:
-                if app_name in self.blocked_apps or info.get("executable", "").lower() in self.blocked_apps:
+                if (
+                    app_name in self.blocked_apps
+                    or info.get("executable", "").lower() in self.blocked_apps
+                ):
                     self._terminate_process(pid, f"Blocked App: {app_name}")
                     return
 
-            if self.enabled_features.get("url_filter") and self.url_filter_mode != "off":
-                browsers = ["chrome.exe", "firefox.exe", "msedge.exe", "opera.exe", "brave.exe"]
+            if (
+                self.enabled_features.get("url_filter")
+                and self.url_filter_mode != "off"
+            ):
+                browsers = [
+                    "chrome.exe",
+                    "firefox.exe",
+                    "msedge.exe",
+                    "opera.exe",
+                    "brave.exe",
+                ]
                 if app_name in browsers:
                     is_forbidden = False
-                    
+
                     system_pages = [
-                        "new tab", "tab baru", "settings", "pengaturan", "history", "downloads", 
-                        "extensions", "about:", "google chrome", "microsoft edge", "brave", 
-                        "mozilla firefox", "private browsing", "incognito"
+                        "new tab",
+                        "tab baru",
+                        "settings",
+                        "pengaturan",
+                        "history",
+                        "downloads",
+                        "extensions",
+                        "about:",
+                        "google chrome",
+                        "microsoft edge",
+                        "brave",
+                        "mozilla firefox",
+                        "private browsing",
+                        "incognito",
                     ]
-                    
+
                     clean_title = window_title.strip().lower()
-                    if not clean_title or clean_title == "unknown": return
+                    if not clean_title or clean_title == "unknown":
+                        return
 
                     is_system_page = any(sys_p in clean_title for sys_p in system_pages)
 
                     def is_match(item, title):
                         item = item.lower()
-                        core_item = item.replace("https://", "").replace("http://", "").replace("www.", "")
-                        
+                        core_item = (
+                            item.replace("https://", "")
+                            .replace("http://", "")
+                            .replace("www.", "")
+                        )
+
                         if "." in core_item:
                             core_item = core_item.split(".")[0]
-                        
+
                         return core_item in title
 
                     if self.url_filter_mode == "blacklist":
@@ -674,13 +873,16 @@ class MonitoringApp:
                                 is_forbidden = True
 
                     if is_forbidden:
-                        self._terminate_process(pid, f"URL Blocked ({self.url_filter_mode}): {window_title}")
+                        self._terminate_process(
+                            pid, f"URL Blocked ({self.url_filter_mode}): {window_title}"
+                        )
 
         except Exception as e:
             print(f"Error in blocking check: {e}")
 
     def _terminate_process(self, pid, reason):
-        if pid == 0: return
+        if pid == 0:
+            return
         try:
             process = psutil.Process(pid)
             # Coba terminate dulu
@@ -694,16 +896,19 @@ class MonitoringApp:
                     process.wait()
                 except Exception:
                     pass
-            
+
             # Safe log
             self._safe_ui_call(self.log, f"BLOCKER: {reason} (Terminated PID {pid})")
-            
+
             # Safe alert
             def show_block_msg():
                 try:
-                    messagebox.showwarning("Security Alert", f"Akses dilarang oleh admin:\n{reason}")
+                    messagebox.showwarning(
+                        "Security Alert", f"Akses dilarang oleh admin:\n{reason}"
+                    )
                 except Exception:
                     pass
+
             self._safe_ui_call(show_block_msg)
         except (psutil.NoSuchProcess, psutil.ZombieProcess):
             # Proses sudah tidak ada, abaikan
@@ -720,24 +925,24 @@ class MonitoringApp:
     def _start_usb_monitor(self):
         if self.usb_monitor_thread is not None:
             self._stop_usb_monitor()
-        
+
         def get_usb_config():
             return {
                 "enabled": self.enabled_features.get("usb_blocker", False),
                 "mode": self.usb_block_mode,
-                "usb_list": self.usb_list
+                "usb_list": self.usb_list,
             }
-        
+
         def callback_log(message):
             self.root.after(0, lambda: self.log(message))
-        
+
         def callback_notification(title, message):
             self.root.after(0, lambda: messagebox.showerror(title, message))
-        
+
         self.usb_monitor_thread = USBMonitorThread(
             callback_log=callback_log,
             callback_notification=callback_notification,
-            get_usb_config=get_usb_config
+            get_usb_config=get_usb_config,
         )
         self.usb_monitor_thread.start()
 
@@ -752,17 +957,19 @@ class MonitoringApp:
     def _start_download_monitor(self):
         if self.download_monitor_running:
             return
-        
+
         self.download_monitor_running = True
         self.download_monitor_stop_event.clear()
-        self.download_thread = threading.Thread(target=self._download_monitor_loop, daemon=True)
+        self.download_thread = threading.Thread(
+            target=self._download_monitor_loop, daemon=True
+        )
         self.download_thread.start()
         self.log("Download monitor started")
 
     def _stop_download_monitor(self):
         if not self.download_monitor_running:
             return
-        
+
         self.download_monitor_stop_event.set()
         self.download_monitor_running = False
         if hasattr(self, "download_thread") and self.download_thread.is_alive():
@@ -776,18 +983,23 @@ class MonitoringApp:
             # User's Downloads folder
             import ctypes
             from ctypes import wintypes
+
             CSIDL_PERSONAL = 5
-            CSIDL_DOWNLOADS = 0x0019 # Download folder
+            CSIDL_DOWNLOADS = 0x0019  # Download folder
             SHGFP_TYPE_CURRENT = 0
-            
+
             buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
-            ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_DOWNLOADS, None, SHGFP_TYPE_CURRENT, buf)
+            ctypes.windll.shell32.SHGetFolderPathW(
+                None, CSIDL_DOWNLOADS, None, SHGFP_TYPE_CURRENT, buf
+            )
             download_path = buf.value
             if download_path and os.path.exists(download_path):
                 dirs.append(download_path)
-                
+
             # Desktop
-            ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf)
+            ctypes.windll.shell32.SHGetFolderPathW(
+                None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf
+            )
             docs_path = buf.value
             if docs_path and os.path.exists(docs_path):
                 desktop_path = os.path.join(os.path.dirname(docs_path), "Desktop")
@@ -795,32 +1007,35 @@ class MonitoringApp:
                     dirs.append(desktop_path)
         except Exception as e:
             pass
-            
+
         return dirs
 
     def _download_monitor_loop(self):
         # Track files we already processed
         processed_files = {}
-        
+
         while not self.download_monitor_stop_event.is_set():
             try:
                 download_dirs = self._get_download_directories()
                 for directory in download_dirs:
                     if not os.path.exists(directory):
                         continue
-                        
+
                     for filename in os.listdir(directory):
                         full_path = os.path.join(directory, filename)
-                        
+
                         if os.path.isfile(full_path):
                             # Get file extension without dot
                             ext = os.path.splitext(filename)[1].lower().replace(".", "")
                             mtime = os.path.getmtime(full_path)
-                            
+
                             # Check if this is a new file or recently modified
-                            if full_path not in processed_files or processed_files[full_path] != mtime:
+                            if (
+                                full_path not in processed_files
+                                or processed_files[full_path] != mtime
+                            ):
                                 processed_files[full_path] = mtime
-                                
+
                                 # Determine if we need to block this file
                                 should_block = False
                                 if self.download_filter_mode == "block_all":
@@ -831,7 +1046,7 @@ class MonitoringApp:
                                 elif self.download_filter_mode == "whitelist":
                                     if ext not in self.download_filter_list:
                                         should_block = True
-                                
+
                                 # Record this download activity
                                 log_record = {
                                     "file_path": full_path,
@@ -839,23 +1054,40 @@ class MonitoringApp:
                                     "extension": ext,
                                     "directory": directory,
                                     "timestamp": datetime.now().isoformat(),
-                                    "blocked": should_block
+                                    "blocked": should_block,
                                 }
                                 self.download_logs.append(log_record)
-                                
+
                                 if should_block:
                                     # Try to delete the file
                                     try:
                                         os.remove(full_path)
-                                        self.root.after(0, lambda: self.log(f"BLOCKED DOWNLOAD: {filename} (Extension: {ext}) - File deleted"))
+                                        self.root.after(
+                                            0,
+                                            lambda: self.log(
+                                                f"BLOCKED DOWNLOAD: {filename} (Extension: {ext}) - File deleted"
+                                            ),
+                                        )
                                     except Exception as e:
-                                        self.root.after(0, lambda: self.log(f"BLOCKED DOWNLOAD: {filename} (Extension: {ext}) - Failed to delete: {str(e)}"))
+                                        self.root.after(
+                                            0,
+                                            lambda: self.log(
+                                                f"BLOCKED DOWNLOAD: {filename} (Extension: {ext}) - Failed to delete: {str(e)}"
+                                            ),
+                                        )
                                 else:
-                                    self.root.after(0, lambda: self.log(f"DOWNLOAD DETECTED: {filename} (Extension: {ext}) - Allowed"))
-                
-                time.sleep(2) # Check every 2 seconds
+                                    self.root.after(
+                                        0,
+                                        lambda: self.log(
+                                            f"DOWNLOAD DETECTED: {filename} (Extension: {ext}) - Allowed"
+                                        ),
+                                    )
+
+                time.sleep(2)  # Check every 2 seconds
             except Exception as e:
-                self.root.after(0, lambda: self.log(f"Download monitor error: {str(e)}"))
+                self.root.after(
+                    0, lambda: self.log(f"Download monitor error: {str(e)}")
+                )
                 time.sleep(5)
 
     # -------------------------------
@@ -870,7 +1102,7 @@ class MonitoringApp:
             except Exception as e:
                 print(f"Error loading file versions: {e}")
         return {}
-        
+
     def _save_file_versions(self):
         """Save current file versions to disk"""
         try:
@@ -883,7 +1115,7 @@ class MonitoringApp:
         # Clear existing items
         for item in self.fs_tree.get_children():
             self.fs_tree.delete(item)
-        
+
         # Add new items
         for sync in self.file_sync_data:
             name = sync.get("name", "N/A")
@@ -895,18 +1127,18 @@ class MonitoringApp:
         def sync_thread():
             # Track whether any changes occurred
             has_changes = False
-            log_buffer = [] # Collect log messages first, then show only if has_changes
-            
+            log_buffer = []  # Collect log messages first, then show only if has_changes
+
             # Add to log buffer helper
             def add_log(msg):
                 log_buffer.append(msg)
-            
+
             add_log("Starting file sync...")
-            
+
             # FIRST PASS: Collect all expected files (from ALL active syncs) first!
             expected_files = []
             updated_versions = {}
-            
+
             # First collect expected files first
             for sync_config in self.file_sync_data:
                 sync_id = str(sync_config.get("id", ""))
@@ -919,27 +1151,31 @@ class MonitoringApp:
                         if filename and target_dir:
                             local_path = os.path.join(target_dir, filename)
                             expected_files.append(local_path)
-            
+
             # Now process all syncs
             for sync_config in self.file_sync_data:
                 sync_id = str(sync_config.get("id", ""))
                 sync_status = sync_config.get("sync_status", "").lower()
                 target_dir = sync_config.get("file_path")
                 files = sync_config.get("files", [])
-                
+
                 add_log(f"  - Processing sync {sync_id} (status: {sync_status})")
-                
+
                 if sync_status != "active":
                     # If not active, delete only files belonging to THIS sync (not other active syncs)
                     if target_dir and os.path.exists(target_dir):
                         try:
-                            add_log(f"  - Cleaning inactive sync {sync_id} in dir: {target_dir}")
+                            add_log(
+                                f"  - Cleaning inactive sync {sync_id} in dir: {target_dir}"
+                            )
                             # Get files only files that belong to THIS inactive sync
                             this_sync_files = set()
                             for file_item in files:
                                 filename = file_item.get("file_name")
                                 if filename:
-                                    this_sync_files.add(os.path.join(target_dir, filename))
+                                    this_sync_files.add(
+                                        os.path.join(target_dir, filename)
+                                    )
                             # Also add from file_versions
                             for version_key in list(self.file_versions.keys()):
                                 if version_key.startswith(f"{sync_id}_"):
@@ -949,83 +1185,111 @@ class MonitoringApp:
                                         this_sync_files.add(f_path)
                             # Now delete only files in this_sync_files and NOT in expected_files
                             for file_path in this_sync_files:
-                                if os.path.isfile(file_path) and file_path not in expected_files:
+                                if (
+                                    os.path.isfile(file_path)
+                                    and file_path not in expected_files
+                                ):
                                     try:
                                         os.remove(file_path)
-                                        add_log(f"  - [Deleted] Not active: {file_path}")
+                                        add_log(
+                                            f"  - [Deleted] Not active: {file_path}"
+                                        )
                                         has_changes = True
                                     except Exception as e:
                                         add_log(f"  - [Error] Delete {file_path}: {e}")
                             # Cleanup file_versions for this sync
-                            keys_to_remove = [k for k in list(self.file_versions.keys()) if k.startswith(f"{sync_id}_")]
-                            add_log(f"  - Removing {len(keys_to_remove)} versions for sync {sync_id}")
+                            keys_to_remove = [
+                                k
+                                for k in list(self.file_versions.keys())
+                                if k.startswith(f"{sync_id}_")
+                            ]
+                            add_log(
+                                f"  - Removing {len(keys_to_remove)} versions for sync {sync_id}"
+                            )
                             if keys_to_remove:
                                 has_changes = True
                             for k in keys_to_remove:
                                 del self.file_versions[k]
                         except Exception as e:
-                            add_log(f"  - [Error] Cleaning up inactive sync {sync_id}: {e}")
+                            add_log(
+                                f"  - [Error] Cleaning up inactive sync {sync_id}: {e}"
+                            )
                     continue
-                
+
                 # If status is active, proceed with download
                 if not target_dir:
                     continue
-                
+
                 try:
                     # Create target dir if doesn't exist
                     os.makedirs(target_dir, exist_ok=True)
-                    
+
                     for file_item in files:
                         file_id = str(file_item.get("id", ""))
                         filename = file_item.get("file_name")
                         file_version = str(file_item.get("file_version", ""))
                         file_hash = str(file_item.get("file_hash", ""))
-                        
+
                         if not file_id or not filename:
                             continue
-                        
+
                         local_file_path = os.path.join(target_dir, filename)
                         version_key = f"{sync_id}_{file_id}"
                         expected_files.append(local_file_path)
-                        
+
                         # Check if we need to download
-                        current_version = self.file_versions.get(version_key, {}).get("version", "")
-                        current_hash = self.file_versions.get(version_key, {}).get("hash", "")
-                        
-                        needs_update = (current_version != file_version) or (current_hash != file_hash)
-                        
+                        current_version = self.file_versions.get(version_key, {}).get(
+                            "version", ""
+                        )
+                        current_hash = self.file_versions.get(version_key, {}).get(
+                            "hash", ""
+                        )
+
+                        needs_update = (current_version != file_version) or (
+                            current_hash != file_hash
+                        )
+
                         if needs_update:
-                            add_log(f"  - [Downloading] {filename} (v{file_version})...")
-                            
+                            add_log(
+                                f"  - [Downloading] {filename} (v{file_version})..."
+                            )
+
                             # Download the file
-                            result = self.data_sender.download_file(file_id, local_file_path)
-                            
+                            result = self.data_sender.download_file(
+                                file_id, local_file_path
+                            )
+
                             if result.get("success"):
                                 add_log(f"  - [Success] {filename} downloaded")
                                 updated_versions[version_key] = {
-                                    "version": file_version, 
+                                    "version": file_version,
                                     "hash": file_hash,
-                                    "path": local_file_path
+                                    "path": local_file_path,
                                 }
                                 has_changes = True
                             else:
-                                add_log(f"  - [Failed] {filename}: {result.get('error')}")
+                                add_log(
+                                    f"  - [Failed] {filename}: {result.get('error')}"
+                                )
                         else:
                             add_log(f"  - [Skip] {filename} (Version match)")
-                        
+
                 except Exception as e:
                     add_log(f"  - [Error] Syncing directory {target_dir}: {e}")
-            
+
             # Cleanup: delete files that are not expected (from ANY sync)
             for sync_config in self.file_sync_data:
                 target_dir = sync_config.get("file_path")
                 if not target_dir or not os.path.exists(target_dir):
                     continue
-                
+
                 try:
                     for item in os.listdir(target_dir):
                         local_path = os.path.join(target_dir, item)
-                        if os.path.isfile(local_path) and local_path not in expected_files:
+                        if (
+                            os.path.isfile(local_path)
+                            and local_path not in expected_files
+                        ):
                             try:
                                 os.remove(local_path)
                                 add_log(f"  - [Deleted] Old file: {target_dir}/{item}")
@@ -1034,94 +1298,129 @@ class MonitoringApp:
                                 add_log(f"  - [Error] Delete old file {item}: {e}")
                 except Exception as e:
                     add_log(f"  - [Error] Cleaning up {target_dir}: {e}")
-            
+
             # Cleanup: delete files from syncs that are NO LONGER IN THE CONFIG!
             # First, get all active sync ids
             active_sync_ids = set()
             for sync_config in self.file_sync_data:
                 active_sync_ids.add(str(sync_config.get("id", "")))
-            
+
             add_log(f"  - Active sync IDs in config: {list(active_sync_ids)}")
-            
+
             # Check file_versions for syncs that are gone
             keys_to_remove = []
             for version_key in list(self.file_versions.keys()):
                 sync_id_from_key = version_key.split("_")[0]
                 if sync_id_from_key not in active_sync_ids:
                     keys_to_remove.append(version_key)
-            
+
             add_log(f"  - Syncs to remove from versions: {keys_to_remove}")
-            
+
             # Delete their files
             for version_key in keys_to_remove:
                 file_info = self.file_versions.get(version_key, {})
                 file_path = file_info.get("path")
-                if file_path and os.path.exists(file_path) and os.path.isfile(file_path):
+                if (
+                    file_path
+                    and os.path.exists(file_path)
+                    and os.path.isfile(file_path)
+                ):
                     try:
                         os.remove(file_path)
                         add_log(f"  - [Deleted] Sync removed: {file_path}")
                         has_changes = True
                     except Exception as e:
-                        add_log(f"  - [Error] Delete sync removed file {file_path}: {e}")
+                        add_log(
+                            f"  - [Error] Delete sync removed file {file_path}: {e}"
+                        )
                 del self.file_versions[version_key]
-            
+
             # Update file versions
             self.file_versions.update(updated_versions)
             self._save_file_versions()
-            
+
             add_log("File sync complete.")
-            
+
             # Show logs ONLY IF there were changes!
             if has_changes:
                 for msg in log_buffer:
                     self.root.after(0, lambda m=msg: self.log(m))
-            
+
         threading.Thread(target=sync_thread, daemon=True).start()
 
     # -------------------------------
     # Block New Install Methods
     # -------------------------------
     def _check_installs(self):
-        if not self.enabled_features.get("block_new_install") or self.block_install_mode == "off":
+        if (
+            not self.enabled_features.get("block_new_install")
+            or self.block_install_mode == "off"
+        ):
             return
-        
+
         # List of system processes to always ignore
         system_processes = [
-            "trustedinstaller.exe", "svchost.exe", "explorer.exe", 
-            "dwm.exe", "csrss.exe", "wininit.exe", "winlogon.exe",
-            "services.exe", "lsass.exe", "smss.exe", "system.exe",
-            "conhost.exe", "taskhostw.exe", "taskeng.exe",
-            "runtimebroker.exe", "searchindexer.exe", "startmenuexperiencehost.exe",
-            "sihost.exe", "shellappruntime.exe", "textinputhost.exe",
-            "applicationframehost.exe", "systemsettings.exe", "sechealthui.exe",
-            "shellexperiencehost.exe", "wscntfy.exe", "wscproxy.exe"
+            "trustedinstaller.exe",
+            "svchost.exe",
+            "explorer.exe",
+            "dwm.exe",
+            "csrss.exe",
+            "wininit.exe",
+            "winlogon.exe",
+            "services.exe",
+            "lsass.exe",
+            "smss.exe",
+            "system.exe",
+            "conhost.exe",
+            "taskhostw.exe",
+            "taskeng.exe",
+            "runtimebroker.exe",
+            "searchindexer.exe",
+            "startmenuexperiencehost.exe",
+            "sihost.exe",
+            "shellappruntime.exe",
+            "textinputhost.exe",
+            "applicationframehost.exe",
+            "systemsettings.exe",
+            "sechealthui.exe",
+            "shellexperiencehost.exe",
+            "wscntfy.exe",
+            "wscproxy.exe",
         ]
-        
+
         # This is a basic example. For real use, you'd need to monitor processes
         # for setup.exe, install.exe, msiexec.exe, etc.
         try:
             import psutil
-            for proc in psutil.process_iter(['pid', 'name', 'exe']):
+
+            for proc in psutil.process_iter(["pid", "name", "exe"]):
                 try:
-                    proc_name = proc.info['name'].lower()
-                    proc_exe = proc.info['exe'].lower() if proc.info['exe'] else ""
-                    pid = proc.info['pid']
-                    
+                    proc_name = proc.info["name"].lower()
+                    proc_exe = proc.info["exe"].lower() if proc.info["exe"] else ""
+                    pid = proc.info["pid"]
+
                     # Skip system processes
                     if proc_name in system_processes:
                         continue
-                    
+
                     # Skip if we already tried and failed
                     if pid in self._denied_pids:
                         continue
-                    
-                    is_installer = any(keyword in proc_name or keyword in proc_exe for keyword in [
-                        "setup", "install", "msiexec", "uninstall", "update"
-                    ])
-                    
+
+                    is_installer = any(
+                        keyword in proc_name or keyword in proc_exe
+                        for keyword in [
+                            "setup",
+                            "install",
+                            "msiexec",
+                            "uninstall",
+                            "update",
+                        ]
+                    )
+
                     if is_installer:
                         should_block = False
-                        
+
                         if self.block_install_mode == "block_all":
                             should_block = True
                         elif self.block_install_mode == "blacklist":
@@ -1137,15 +1436,18 @@ class MonitoringApp:
                                 if item_lower in proc_name or item_lower in proc_exe:
                                     should_block = False
                                     break
-                        
+
                         if should_block:
-                            self._terminate_process(pid, f"Blocked Installer: {proc_name}")
-                            
+                            self._terminate_process(
+                                pid, f"Blocked Installer: {proc_name}"
+                            )
+
                 except (psutil.NoSuchProcess, psutil.ZombieProcess):
                     pass
-                    
+
         except Exception as e:
             import traceback
+
             print(f"Install monitor error: {e}")
             print("Full traceback:")
             traceback.print_exc()
@@ -1153,10 +1455,13 @@ class MonitoringApp:
     def _on_idle_detected(self, event):
         def show_alert():
             try:
-                messagebox.showwarning("Idle Alert", "Sistem mendeteksi tidak ada aktivitas selama 30 detik!")
+                messagebox.showwarning(
+                    "Idle Alert",
+                    "Sistem mendeteksi tidak ada aktivitas selama 30 detik!",
+                )
             except Exception:
                 pass
-        
+
         self._safe_ui_call(show_alert)
         self._safe_ui_call(self.log, f"IDLE DETECTED: No activity for 30s")
 
@@ -1185,7 +1490,7 @@ class MonitoringApp:
             text="DEVICE MONITORING SYSTEM",
             font=("Segoe UI", 20, "bold"),
             fg="#f8fafc",
-            bg=self.header_color
+            bg=self.header_color,
         )
         title_label.pack(pady=22)
 
@@ -1194,10 +1499,10 @@ class MonitoringApp:
 
         # Style for larger tabs
         style = ttk.Style()
-        style.configure('TNotebook.Tab', font=('Segoe UI', 12), padding=[20,10])
-        
+        style.configure("TNotebook.Tab", font=("Segoe UI", 12), padding=[20, 10])
+
         # Create Notebook (Tabs)
-        self.notebook = ttk.Notebook(main_frame, style='TNotebook')
+        self.notebook = ttk.Notebook(main_frame, style="TNotebook")
         self.notebook.pack(fill="both", expand=True)
 
         # -------------------------------
@@ -1208,16 +1513,16 @@ class MonitoringApp:
 
         # Status Container
         status_container = tk.LabelFrame(
-            self.tab_monitoring, 
-            text=" Monitoring Status ", 
-            font=("Segoe UI", 12, "bold"), 
-            padx=20, 
-            pady=20, 
+            self.tab_monitoring,
+            text=" Monitoring Status ",
+            font=("Segoe UI", 12, "bold"),
+            padx=20,
+            pady=20,
             bg=self.card_color,
             fg=self.header_color,
             relief="flat",
             highlightthickness=1,
-            highlightbackground=self.border_color
+            highlightbackground=self.border_color,
         )
         status_container.pack(fill="x", pady=(0, 20))
 
@@ -1225,40 +1530,148 @@ class MonitoringApp:
         grid_frame.pack(fill="x")
 
         # Update labels to use secondary text color
-        tk.Label(grid_frame, text="• System Status:", font=("Segoe UI", 10), fg=self.secondary_text_color, bg=self.card_color).grid(row=0, column=0, sticky="w", pady=6)
-        self.status_label = tk.Label(grid_frame, text="Idle", font=("Segoe UI", 11, "bold"), fg=self.secondary_text_color, bg=self.card_color)
+        tk.Label(
+            grid_frame,
+            text="• System Status:",
+            font=("Segoe UI", 10),
+            fg=self.secondary_text_color,
+            bg=self.card_color,
+        ).grid(row=0, column=0, sticky="w", pady=6)
+        self.status_label = tk.Label(
+            grid_frame,
+            text="Idle",
+            font=("Segoe UI", 11, "bold"),
+            fg=self.secondary_text_color,
+            bg=self.card_color,
+        )
         self.status_label.grid(row=0, column=1, sticky="w", padx=(8, 40))
 
-        tk.Label(grid_frame, text="• Connection:", font=("Segoe UI", 10), fg=self.secondary_text_color, bg=self.card_color).grid(row=0, column=2, sticky="w", pady=6)
-        self.conn_status_label = tk.Label(grid_frame, text="Checking...", font=("Segoe UI", 11, "bold"), fg=self.warning_color, bg=self.card_color)
+        tk.Label(
+            grid_frame,
+            text="• Connection:",
+            font=("Segoe UI", 10),
+            fg=self.secondary_text_color,
+            bg=self.card_color,
+        ).grid(row=0, column=2, sticky="w", pady=6)
+        self.conn_status_label = tk.Label(
+            grid_frame,
+            text="Checking...",
+            font=("Segoe UI", 11, "bold"),
+            fg=self.warning_color,
+            bg=self.card_color,
+        )
         self.conn_status_label.grid(row=0, column=3, sticky="w", padx=(8, 40))
 
-        tk.Label(grid_frame, text="• Active App:", font=("Segoe UI", 10), fg=self.secondary_text_color, bg=self.card_color).grid(row=1, column=0, sticky="w", pady=6)
-        self.active_app_label = tk.Label(grid_frame, text="-", font=("Segoe UI", 11, "bold"), fg=self.accent_color, bg=self.card_color)
+        tk.Label(
+            grid_frame,
+            text="• Active App:",
+            font=("Segoe UI", 10),
+            fg=self.secondary_text_color,
+            bg=self.card_color,
+        ).grid(row=1, column=0, sticky="w", pady=6)
+        self.active_app_label = tk.Label(
+            grid_frame,
+            text="-",
+            font=("Segoe UI", 11, "bold"),
+            fg=self.accent_color,
+            bg=self.card_color,
+        )
         self.active_app_label.grid(row=1, column=1, sticky="w", padx=(8, 40))
 
-        tk.Label(grid_frame, text="• Data Tracked:", font=("Segoe UI", 10), fg=self.secondary_text_color, bg=self.card_color).grid(row=1, column=2, sticky="w", pady=6)
-        self.usage_count_label = tk.Label(grid_frame, text="0", font=("Segoe UI", 11, "bold"), fg=self.success_color, bg=self.card_color)
+        tk.Label(
+            grid_frame,
+            text="• Data Tracked:",
+            font=("Segoe UI", 10),
+            fg=self.secondary_text_color,
+            bg=self.card_color,
+        ).grid(row=1, column=2, sticky="w", pady=6)
+        self.usage_count_label = tk.Label(
+            grid_frame,
+            text="0",
+            font=("Segoe UI", 11, "bold"),
+            fg=self.success_color,
+            bg=self.card_color,
+        )
         self.usage_count_label.grid(row=1, column=3, sticky="w", padx=(8, 40))
 
-        tk.Label(grid_frame, text="• Sync Interval:", font=("Segoe UI", 10), fg=self.secondary_text_color, bg=self.card_color).grid(row=2, column=0, sticky="w", pady=6)
-        self.interval_label = tk.Label(grid_frame, text="-", font=("Segoe UI", 11, "bold"), fg=self.warning_color, bg=self.card_color)
+        tk.Label(
+            grid_frame,
+            text="• Sync Interval:",
+            font=("Segoe UI", 10),
+            fg=self.secondary_text_color,
+            bg=self.card_color,
+        ).grid(row=2, column=0, sticky="w", pady=6)
+        self.interval_label = tk.Label(
+            grid_frame,
+            text="-",
+            font=("Segoe UI", 11, "bold"),
+            fg=self.warning_color,
+            bg=self.card_color,
+        )
         self.interval_label.grid(row=2, column=1, sticky="w", padx=(8, 40))
 
-        tk.Label(grid_frame, text="• Hostname:", font=("Segoe UI", 10), fg=self.secondary_text_color, bg=self.card_color).grid(row=2, column=2, sticky="w", pady=6)
-        self.hostname_label = tk.Label(grid_frame, text=platform.node(), font=("Segoe UI", 11, "bold"), fg=self.accent_color, bg=self.card_color)
+        tk.Label(
+            grid_frame,
+            text="• Hostname:",
+            font=("Segoe UI", 10),
+            fg=self.secondary_text_color,
+            bg=self.card_color,
+        ).grid(row=2, column=2, sticky="w", pady=6)
+        self.hostname_label = tk.Label(
+            grid_frame,
+            text=platform.node(),
+            font=("Segoe UI", 11, "bold"),
+            fg=self.accent_color,
+            bg=self.card_color,
+        )
         self.hostname_label.grid(row=2, column=3, sticky="w", padx=(8, 40))
 
-        tk.Label(grid_frame, text="• Server URL:", font=("Segoe UI", 10), fg=self.secondary_text_color, bg=self.card_color).grid(row=3, column=0, sticky="w", pady=6)
-        self.server_label = tk.Label(grid_frame, text=self.get_base_url(), font=("Segoe UI", 11, "bold"), fg=self.accent_color, bg=self.card_color)
+        tk.Label(
+            grid_frame,
+            text="• Server URL:",
+            font=("Segoe UI", 10),
+            fg=self.secondary_text_color,
+            bg=self.card_color,
+        ).grid(row=3, column=0, sticky="w", pady=6)
+        self.server_label = tk.Label(
+            grid_frame,
+            text=self.get_base_url(),
+            font=("Segoe UI", 11, "bold"),
+            fg=self.accent_color,
+            bg=self.card_color,
+        )
         self.server_label.grid(row=3, column=1, columnspan=3, sticky="w", padx=(8, 40))
 
-        tk.Label(grid_frame, text="• System Time:", font=("Segoe UI", 10), fg=self.secondary_text_color, bg=self.card_color).grid(row=4, column=0, sticky="w", pady=6)
-        self.time_label = tk.Label(grid_frame, text="", font=("Segoe UI", 11, "bold"), fg=self.secondary_text_color, bg=self.card_color)
+        tk.Label(
+            grid_frame,
+            text="• System Time:",
+            font=("Segoe UI", 10),
+            fg=self.secondary_text_color,
+            bg=self.card_color,
+        ).grid(row=4, column=0, sticky="w", pady=6)
+        self.time_label = tk.Label(
+            grid_frame,
+            text="",
+            font=("Segoe UI", 11, "bold"),
+            fg=self.secondary_text_color,
+            bg=self.card_color,
+        )
         self.time_label.grid(row=4, column=1, sticky="w", padx=(8, 40))
 
-        tk.Label(grid_frame, text="• Last Config:", font=("Segoe UI", 10), fg=self.secondary_text_color, bg=self.card_color).grid(row=4, column=2, sticky="w", pady=6)
-        self.last_config_label = tk.Label(grid_frame, text="Never", font=("Segoe UI", 11, "bold"), fg=self.accent_color, bg=self.card_color)
+        tk.Label(
+            grid_frame,
+            text="• Last Config:",
+            font=("Segoe UI", 10),
+            fg=self.secondary_text_color,
+            bg=self.card_color,
+        ).grid(row=4, column=2, sticky="w", pady=6)
+        self.last_config_label = tk.Label(
+            grid_frame,
+            text="Never",
+            font=("Segoe UI", 11, "bold"),
+            fg=self.accent_color,
+            bg=self.card_color,
+        )
         self.last_config_label.grid(row=4, column=3, sticky="w", padx=(8, 40))
 
         # -------------------------------
@@ -1268,16 +1681,16 @@ class MonitoringApp:
         self.notebook.add(self.tab_log, text="Log")
 
         log_container = tk.LabelFrame(
-            self.tab_log, 
-            text=" System Activities ", 
-            font=("Segoe UI", 12, "bold"), 
-            padx=12, 
-            pady=12, 
+            self.tab_log,
+            text=" System Activities ",
+            font=("Segoe UI", 12, "bold"),
+            padx=12,
+            pady=12,
             bg=self.card_color,
             fg=self.header_color,
             relief="flat",
             highlightthickness=1,
-            highlightbackground=self.border_color
+            highlightbackground=self.border_color,
         )
         log_container.pack(fill="both", expand=True)
 
@@ -1290,7 +1703,7 @@ class MonitoringApp:
             insertbackground="#e2e8f0",
             relief="flat",
             padx=12,
-            pady=12
+            pady=12,
         )
         self.log_text.pack(fill="both", expand=True)
 
@@ -1301,33 +1714,37 @@ class MonitoringApp:
         self.notebook.add(self.tab_file_sync, text="File Sync")
 
         fs_container = tk.LabelFrame(
-            self.tab_file_sync, 
-            text=" File Synchronization ", 
-            font=("Segoe UI", 12, "bold"), 
-            padx=12, 
-            pady=12, 
+            self.tab_file_sync,
+            text=" File Synchronization ",
+            font=("Segoe UI", 12, "bold"),
+            padx=12,
+            pady=12,
             bg=self.card_color,
             fg=self.header_color,
             relief="flat",
             highlightthickness=1,
-            highlightbackground=self.border_color
+            highlightbackground=self.border_color,
         )
         fs_container.pack(fill="both", expand=True)
 
         # File Sync Treeview
         self.fs_tree_columns = ("name", "description", "status")
-        self.fs_tree = ttk.Treeview(fs_container, columns=self.fs_tree_columns, show="headings", height=15)
+        self.fs_tree = ttk.Treeview(
+            fs_container, columns=self.fs_tree_columns, show="headings", height=15
+        )
         self.fs_tree.heading("name", text="Sync Name")
         self.fs_tree.heading("description", text="Description")
         self.fs_tree.heading("status", text="Status")
-        
+
         self.fs_tree.column("name", width=200, anchor="w")
         self.fs_tree.column("description", width=400, anchor="w")
         self.fs_tree.column("status", width=120, anchor="w")
-        
+
         self.fs_tree.pack(side="left", fill="both", expand=True)
 
-        fs_scroll = ttk.Scrollbar(fs_container, orient="vertical", command=self.fs_tree.yview)
+        fs_scroll = ttk.Scrollbar(
+            fs_container, orient="vertical", command=self.fs_tree.yview
+        )
         self.fs_tree.configure(yscrollcommand=fs_scroll.set)
         fs_scroll.pack(side="right", fill="y")
 
@@ -1338,16 +1755,16 @@ class MonitoringApp:
         self.notebook.add(self.tab_features, text="Features")
 
         feature_container = tk.LabelFrame(
-            self.tab_features, 
-            text=" Features Status ", 
-            font=("Segoe UI", 12, "bold"), 
-            padx=12, 
-            pady=12, 
+            self.tab_features,
+            text=" Features Status ",
+            font=("Segoe UI", 12, "bold"),
+            padx=12,
+            pady=12,
             bg=self.card_color,
             fg=self.header_color,
             relief="flat",
             highlightthickness=1,
-            highlightbackground=self.border_color
+            highlightbackground=self.border_color,
         )
         feature_container.pack(fill="both", expand=True)
 
@@ -1368,28 +1785,46 @@ class MonitoringApp:
             ("url_filter", "URL Filter"),
             ("usb_blocker", "USB Blocker"),
             ("block_new_install", "Block New Install"),
-            ("download_filter", "Download Filter")
+            ("download_filter", "Download Filter"),
         ]
 
         # 2 columns
         row, col = 0, 0
         for key, display_name in features_list:
-            frame = tk.Frame(features_container, bg=self.card_color, bd=1, relief="solid", highlightbackground=self.border_color)
+            frame = tk.Frame(
+                features_container,
+                bg=self.card_color,
+                bd=1,
+                relief="solid",
+                highlightbackground=self.border_color,
+            )
             frame.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
-            
+
             # Feature name (smaller size)
-            tk.Label(frame, text=display_name, font=("Segoe UI", 9, "bold"), bg=self.card_color, fg=self.text_color).pack(pady=(4, 2), padx=8, anchor="w")
-            
+            tk.Label(
+                frame,
+                text=display_name,
+                font=("Segoe UI", 9, "bold"),
+                bg=self.card_color,
+                fg=self.text_color,
+            ).pack(pady=(4, 2), padx=8, anchor="w")
+
             # Status label (smaller size)
-            status_lbl = tk.Label(frame, text="OFF", font=("Segoe UI", 9, "bold"), bg=self.card_color, fg=self.error_color)
+            status_lbl = tk.Label(
+                frame,
+                text="OFF",
+                font=("Segoe UI", 9, "bold"),
+                bg=self.card_color,
+                fg=self.error_color,
+            )
             status_lbl.pack(pady=(0, 4), padx=8, anchor="w")
             self.feature_labels[key] = status_lbl
-            
+
             col += 1
             if col >= 2:
                 col = 0
                 row += 1
-                
+
         # Configure grid weights
         features_container.columnconfigure(0, weight=1)
         features_container.columnconfigure(1, weight=1)
@@ -1405,16 +1840,20 @@ class MonitoringApp:
         """Safely call UI functions from non-main threads with error handling."""
         try:
             # Check if root exists before doing anything
-            if not hasattr(self, 'root') or not self.root or not self.root.winfo_exists():
+            if (
+                not hasattr(self, "root")
+                or not self.root
+                or not self.root.winfo_exists()
+            ):
                 return
-            
+
             # Use try-except when calling root.after to be extra safe
             def wrapped():
                 try:
                     func(*args, **kwargs)
                 except Exception as e:
                     print(f"UI execution failed: {e}")
-            
+
             self.root.after(0, wrapped)
         except Exception as e:
             print(f"UI call scheduling failed: {e}")
@@ -1424,10 +1863,14 @@ class MonitoringApp:
         timestamp = datetime.now().strftime("%H:%M:%S")
         try:
             # First check if widgets exist and are valid
-            if not hasattr(self, 'log_text') or not self.log_text or not self.log_text.winfo_exists():
+            if (
+                not hasattr(self, "log_text")
+                or not self.log_text
+                or not self.log_text.winfo_exists()
+            ):
                 print(f"[LOG] {message}")
                 return
-            
+
             self.log_text.config(state="normal")
             self.log_text.insert("end", f"[{timestamp}] {message}\n")
             self.log_text.see("end")
@@ -1479,7 +1922,9 @@ class MonitoringApp:
                             self._stop_recording()
 
                     usage_count = len(self.app_monitor.app_usage)
-                    self._safe_ui_call(self.usage_count_label.config, text=str(usage_count))
+                    self._safe_ui_call(
+                        self.usage_count_label.config, text=str(usage_count)
+                    )
                 else:
                     self._safe_ui_call(self.active_app_label.config, text="DISABLED")
 
@@ -1494,11 +1939,13 @@ class MonitoringApp:
         self.recording_target_app = app_name
         self.screen_recorder.start_recording()
         self._safe_ui_call(self.log, f"Recording started: {app_name}")
+
         def zoom_window():
             try:
-                self.root.state('zoomed')
+                self.root.state("zoomed")
             except Exception:
                 pass
+
         self._safe_ui_call(zoom_window)
 
     def _stop_recording(self):
@@ -1509,13 +1956,15 @@ class MonitoringApp:
         self.is_recording = False
         target_app = self.recording_target_app
         self.recording_target_app = None
-        
+
         self._safe_ui_call(self.log, f"Recording stopped: {target_app}")
+
         def zoom_window():
             try:
-                self.root.state('zoomed')
+                self.root.state("zoomed")
             except Exception:
                 pass
+
         self._safe_ui_call(zoom_window)
 
         if recording_info and recording_info.get("filepath"):
@@ -1526,27 +1975,44 @@ class MonitoringApp:
             with self.video_send_lock:
                 try:
                     location_data = self.location_tracker.get_location()
-                    video_base64 = self.screen_recorder.get_recording_as_base64(recording_info["filepath"])
-                    
+                    video_base64 = self.screen_recorder.get_recording_as_base64(
+                        recording_info["filepath"]
+                    )
+
                     if video_base64 == "TOO_LARGE":
-                        self._safe_ui_call(self.log, f"Recording skipped: File too large (>30MB)")
+                        self._safe_ui_call(
+                            self.log, f"Recording skipped: File too large (>30MB)"
+                        )
                     elif video_base64:
                         recording_info["video_base64"] = video_base64
-                        result = self.data_sender.send_recording(recording_info, location_data)
-                        
+                        result = self.data_sender.send_recording(
+                            recording_info, location_data
+                        )
+
                         if result.get("success"):
-                            self._safe_ui_call(self.log, f"Recording sent: SUCCESS (Status {result.get('status_code')})")
+                            self._safe_ui_call(
+                                self.log,
+                                f"Recording sent: SUCCESS (Status {result.get('status_code')})",
+                            )
                         else:
-                            self._safe_ui_call(self.log, f"Recording send FAILED: {result.get('error')}. Saving to offline queue...")
-                            self.persistence.add_to_queue("recording", {
-                                "recording_info": recording_info,
-                                "location": location_data
-                            })
+                            self._safe_ui_call(
+                                self.log,
+                                f"Recording send FAILED: {result.get('error')}. Saving to offline queue...",
+                            )
+                            self.persistence.add_to_queue(
+                                "recording",
+                                {
+                                    "recording_info": recording_info,
+                                    "location": location_data,
+                                },
+                            )
                     else:
-                        self._safe_ui_call(self.log, f"Recording skipped: Empty file or read error")
+                        self._safe_ui_call(
+                            self.log, f"Recording skipped: Empty file or read error"
+                        )
 
                     self.screen_recorder.delete_recording(recording_info["filepath"])
-                    
+
                 except Exception as e:
                     self._safe_ui_call(self.log, f"Send recording error: {e}")
 
@@ -1570,57 +2036,100 @@ class MonitoringApp:
             location_data = None
             if self.enabled_features.get("location"):
                 location_data = self.location_tracker.get_location()
-            
-            app_usage_data = self.app_monitor.get_usage_data() if self.enabled_features.get("app_usage") else {}
-            browsing_data = self.browsing_tracker.get_new_history() if self.enabled_features.get("browsing_history") else []
-            upload_data = self.upload_tracker.get_new_activities() if self.enabled_features.get("upload_activity") else []
-            keystrokes_data = self.keylogger.get_logs() if self.enabled_features.get("keylogger") else []
-            idle_data = self.idle_tracker.get_new_events() if self.enabled_features.get("idle_tracker") else []
-            
+
+            app_usage_data = (
+                self.app_monitor.get_usage_data()
+                if self.enabled_features.get("app_usage")
+                else {}
+            )
+            browsing_data = (
+                self.browsing_tracker.get_new_history()
+                if self.enabled_features.get("browsing_history")
+                else []
+            )
+            upload_data = (
+                self.upload_tracker.get_new_activities()
+                if self.enabled_features.get("upload_activity")
+                else []
+            )
+            keystrokes_data = (
+                self.keylogger.get_logs()
+                if self.enabled_features.get("keylogger")
+                else []
+            )
+            idle_data = (
+                self.idle_tracker.get_new_events()
+                if self.enabled_features.get("idle_tracker")
+                else []
+            )
+
             count = len(browsing_data)
             upload_count = len(upload_data)
             keystroke_count = len(keystrokes_data)
             idle_count = len(idle_data)
             download_count = len(self.download_logs)
-            
+
             screenshot_data = None
             if self.enabled_features.get("screenshot"):
                 screenshot_data = self.screenshot_capture.capture_and_encode()
 
             results = {}
-            
+
             if self.enabled_features.get("app_usage"):
-                results["app_usage"] = self.data_sender.send_app_usage(app_usage_data, location_data)
-                
+                results["app_usage"] = self.data_sender.send_app_usage(
+                    app_usage_data, location_data
+                )
+
             if self.enabled_features.get("browsing_history"):
-                results["browsing_history"] = self.data_sender.send_browsing_history(browsing_data, location_data)
-                
+                results["browsing_history"] = self.data_sender.send_browsing_history(
+                    browsing_data, location_data
+                )
+
             if self.enabled_features.get("screenshot") and screenshot_data:
-                results["screenshot"] = self.data_sender.send_screenshot(screenshot_data, location_data)
+                results["screenshot"] = self.data_sender.send_screenshot(
+                    screenshot_data, location_data
+                )
 
             if location_data:
                 loc_result = self.data_sender.send_location(location_data)
                 results["location_data"] = loc_result
                 if not loc_result.get("success"):
-                    self.persistence.add_to_queue("location", {"location": location_data})
-            
+                    self.persistence.add_to_queue(
+                        "location", {"location": location_data}
+                    )
+
             if keystrokes_data:
-                key_result = self.data_sender.send_keystrokes(keystrokes_data, location_data)
+                key_result = self.data_sender.send_keystrokes(
+                    keystrokes_data, location_data
+                )
                 results["keystrokes"] = key_result
                 if not key_result.get("success"):
-                    self.persistence.add_to_queue("keystrokes", {"keystrokes": keystrokes_data, "location": location_data})
+                    self.persistence.add_to_queue(
+                        "keystrokes",
+                        {"keystrokes": keystrokes_data, "location": location_data},
+                    )
 
             if idle_data:
-                idle_result = self.data_sender.send_idle_events(idle_data, location_data)
+                idle_result = self.data_sender.send_idle_events(
+                    idle_data, location_data
+                )
                 results["idle_event"] = idle_result
                 if not idle_result.get("success"):
-                    self.persistence.add_to_queue("idle_event", {"idle_events": idle_data, "location": location_data})
+                    self.persistence.add_to_queue(
+                        "idle_event",
+                        {"idle_events": idle_data, "location": location_data},
+                    )
 
             if upload_data:
-                up_result = self.data_sender.send_upload_activity(upload_data, location_data)
+                up_result = self.data_sender.send_upload_activity(
+                    upload_data, location_data
+                )
                 results["upload_activity"] = up_result
                 if not up_result.get("success"):
-                    self.persistence.add_to_queue("upload_activity", {"upload_activities": upload_data, "location": location_data})
+                    self.persistence.add_to_queue(
+                        "upload_activity",
+                        {"upload_activities": upload_data, "location": location_data},
+                    )
 
             # Send download logs
             download_count_sent = 0
@@ -1631,24 +2140,50 @@ class MonitoringApp:
                 results["download_count_sent"] = download_count_sent
                 if dl_result.get("success"):
                     # Clear logs if sent successfully
-                    self._safe_ui_call(self.log, f"Download logs sent: SUCCESS ({download_count_sent} items)")
+                    self._safe_ui_call(
+                        self.log,
+                        f"Download logs sent: SUCCESS ({download_count_sent} items)",
+                    )
                     self.download_logs = []
                 else:
                     # Save to queue if failed
-                    self.persistence.add_to_queue("download_logs", {"download_logs": self.download_logs, "location": location_data})
-                    self._safe_ui_call(self.log, f"Download logs failed: {dl_result.get('error')} - Saved to queue")
+                    self.persistence.add_to_queue(
+                        "download_logs",
+                        {
+                            "download_logs": self.download_logs,
+                            "location": location_data,
+                        },
+                    )
+                    self._safe_ui_call(
+                        self.log,
+                        f"Download logs failed: {dl_result.get('error')} - Saved to queue",
+                    )
 
-            self._handle_send_results(results, app_usage_data, browsing_data, screenshot_data, location_data)
+            self._handle_send_results(
+                results, app_usage_data, browsing_data, screenshot_data, location_data
+            )
 
             history_result = results.get("browsing_history", {})
-            if history_result.get("success") and self.enabled_features.get("browsing_history"):
+            if history_result.get("success") and self.enabled_features.get(
+                "browsing_history"
+            ):
                 if browsing_data:
-                    latest_ts = max([h["timestamp"] for h in browsing_data if h.get("timestamp")])
+                    latest_ts = max(
+                        [h["timestamp"] for h in browsing_data if h.get("timestamp")]
+                    )
                     self.browsing_tracker.mark_as_sent(latest_ts)
                 else:
                     self.browsing_tracker.mark_as_sent()
 
-            self._safe_ui_call(self._update_send_result, results, count, upload_count, keystroke_count, idle_count, download_count)
+            self._safe_ui_call(
+                self._update_send_result,
+                results,
+                count,
+                upload_count,
+                keystroke_count,
+                idle_count,
+                download_count,
+            )
 
         except Exception as e:
             self._safe_ui_call(self.log, f"Send error: {e}")
@@ -1659,13 +2194,24 @@ class MonitoringApp:
     def _handle_send_results(self, results, app_usage, browsing, screenshot, location):
         if self.enabled_features.get("app_usage") and results.get("app_usage"):
             if not results.get("app_usage", {}).get("success"):
-                self.persistence.add_to_queue("app_usage", {"app_usage": app_usage, "location": location})
-            
-        if self.enabled_features.get("browsing_history") and results.get("browsing_history"):
+                self.persistence.add_to_queue(
+                    "app_usage", {"app_usage": app_usage, "location": location}
+                )
+
+        if self.enabled_features.get("browsing_history") and results.get(
+            "browsing_history"
+        ):
             if not results.get("browsing_history", {}).get("success"):
-                self.persistence.add_to_queue("browsing_history", {"browsing_history": browsing, "location": location})
-            
-        if self.enabled_features.get("screenshot") and screenshot and results.get("screenshot"):
+                self.persistence.add_to_queue(
+                    "browsing_history",
+                    {"browsing_history": browsing, "location": location},
+                )
+
+        if (
+            self.enabled_features.get("screenshot")
+            and screenshot
+            and results.get("screenshot")
+        ):
             if not results.get("screenshot", {}).get("success"):
                 self.persistence.add_to_queue("screenshot", screenshot)
 
@@ -1674,9 +2220,10 @@ class MonitoringApp:
         if not queue:
             return
 
-        self._safe_ui_call(self.log, f"Attempting to send {len(queue)} pending offline items...")
-        
-        failed_items = []  
+        self._safe_ui_call(
+            self.log, f"Attempting to send {len(queue)} pending offline items..."
+        )
+
         success_indices = []
         for i, item in enumerate(queue):
             data_type = item["data_type"]
@@ -1685,45 +2232,68 @@ class MonitoringApp:
 
             try:
                 if data_type == "app_usage":
-                    result = self.data_sender.send_app_usage(payload["app_usage"], payload.get("location"))
+                    result = self.data_sender.send_app_usage(
+                        payload["app_usage"], payload.get("location")
+                    )
                 elif data_type == "browsing_history":
-                    result = self.data_sender.send_browsing_history(payload["browsing_history"], payload.get("location"))
+                    result = self.data_sender.send_browsing_history(
+                        payload["browsing_history"], payload.get("location")
+                    )
                 elif data_type == "screenshot":
-                    result = self.data_sender.send_screenshot(payload, payload.get("location"))
+                    result = self.data_sender.send_screenshot(
+                        payload, payload.get("location")
+                    )
                 elif data_type == "keystrokes":
-                    result = self.data_sender.send_keystrokes(payload["keystrokes"], payload.get("location"))
+                    result = self.data_sender.send_keystrokes(
+                        payload["keystrokes"], payload.get("location")
+                    )
                 elif data_type == "upload_activity":
-                    result = self.data_sender.send_upload_activity(payload["upload_activities"], payload.get("location"))
+                    result = self.data_sender.send_upload_activity(
+                        payload["upload_activities"], payload.get("location")
+                    )
                 elif data_type == "recording":
-                    result = self.data_sender.send_recording(payload["recording_info"], payload.get("location"))
+                    result = self.data_sender.send_recording(
+                        payload["recording_info"], payload.get("location")
+                    )
                 elif data_type == "location":
                     result = self.data_sender.send_location(payload["location"])
                 elif data_type == "idle_event":
-                    result = self.data_sender.send_idle_events(payload["idle_events"], payload.get("location"))
+                    result = self.data_sender.send_idle_events(
+                        payload["idle_events"], payload.get("location")
+                    )
                 elif data_type == "download_logs":
-                    result = self.data_sender.send_download_logs(payload["download_logs"])
+                    result = self.data_sender.send_download_logs(
+                        payload["download_logs"]
+                    )
 
                 if result.get("success"):
                     success_indices.append(i)
-                else:
-                    failed_items.append((i, data_type))
-                    self._safe_ui_call(self.log, f"Failed to send offline item {data_type}: {result.get('error')}")
             except:
-                failed_items.append((i, data_type))
+                pass
 
         for index in sorted(success_indices, reverse=True):
             self.persistence.remove_item(index)
-        
-        if success_indices:
-            self._safe_ui_call(self.log, f"Successfully sent {len(success_indices)} offline items.")
 
-    def _update_send_result(self, results, browsing_count=0, upload_count=0, keystroke_count=0, idle_count=0, download_count=0):
+        if success_indices:
+            self._safe_ui_call(
+                self.log, f"Successfully sent {len(success_indices)} offline items."
+            )
+
+    def _update_send_result(
+        self,
+        results,
+        browsing_count=0,
+        upload_count=0,
+        keystroke_count=0,
+        idle_count=0,
+        download_count=0,
+    ):
         active_results = False
         for feature, enabled in self.enabled_features.items():
             if enabled:
                 active_results = True
                 break
-        
+
         if not active_results:
             return
 
@@ -1732,32 +2302,46 @@ class MonitoringApp:
         if self.enabled_features.get("app_usage"):
             app_result = results.get("app_usage", {})
             if app_result.get("success"):
-                self.log(f"  - App usage: SUCCESS (Status {app_result.get('status_code')})")
+                self.log(
+                    f"  - App usage: SUCCESS (Status {app_result.get('status_code')})"
+                )
             else:
                 self.log(f"  - App usage: FAILED ({app_result.get('error')})")
 
         if self.enabled_features.get("browsing_history"):
             history_result = results.get("browsing_history", {})
             if history_result.get("success"):
-                self.log(f"  - Browsing history ({browsing_count} items): SUCCESS (Status {history_result.get('status_code')})")
+                self.log(
+                    f"  - Browsing history ({browsing_count} items): SUCCESS (Status {history_result.get('status_code')})"
+                )
             else:
-                self.log(f"  - Browsing history: FAILED ({history_result.get('error')})")
+                self.log(
+                    f"  - Browsing history: FAILED ({history_result.get('error')})"
+                )
 
         if self.enabled_features.get("location"):
             location_result = results.get("location_data", {})
             if location_result:
                 if location_result.get("success"):
-                    self.log(f"  - Location data: SUCCESS (Status {location_result.get('status_code')})")
+                    self.log(
+                        f"  - Location data: SUCCESS (Status {location_result.get('status_code')})"
+                    )
                 else:
-                    self.log(f"  - Location data: FAILED ({location_result.get('error')})")
+                    self.log(
+                        f"  - Location data: FAILED ({location_result.get('error')})"
+                    )
 
         if self.enabled_features.get("screenshot"):
             screenshot_result = results.get("screenshot", {})
             if screenshot_result:
                 if screenshot_result.get("success"):
-                    self.log(f"  - Screenshot: SUCCESS (Status {screenshot_result.get('status_code')})")
+                    self.log(
+                        f"  - Screenshot: SUCCESS (Status {screenshot_result.get('status_code')})"
+                    )
                 else:
-                    self.log(f"  - Screenshot: FAILED ({screenshot_result.get('error')})")
+                    self.log(
+                        f"  - Screenshot: FAILED ({screenshot_result.get('error')})"
+                    )
 
         if self.enabled_features.get("keylogger"):
             keystrokes_result = results.get("keystrokes", {})
@@ -1765,9 +2349,13 @@ class MonitoringApp:
                 self.log(f"  - Keystrokes (0 items): SUCCESS (No data)")
             elif keystrokes_result:
                 if keystrokes_result.get("success"):
-                    self.log(f"  - Keystrokes ({keystroke_count} items): SUCCESS (Status {keystrokes_result.get('status_code')})")
+                    self.log(
+                        f"  - Keystrokes ({keystroke_count} items): SUCCESS (Status {keystrokes_result.get('status_code')})"
+                    )
                 else:
-                    self.log(f"  - Keystrokes: FAILED ({keystrokes_result.get('error')})")
+                    self.log(
+                        f"  - Keystrokes: FAILED ({keystrokes_result.get('error')})"
+                    )
 
         if self.enabled_features.get("idle_tracker"):
             idle_result = results.get("idle_event", {})
@@ -1775,7 +2363,9 @@ class MonitoringApp:
                 self.log(f"  - Idle events (0 items): SUCCESS (No data)")
             elif idle_result:
                 if idle_result.get("success"):
-                    self.log(f"  - Idle events ({idle_count} items): SUCCESS (Status {idle_result.get('status_code')})")
+                    self.log(
+                        f"  - Idle events ({idle_count} items): SUCCESS (Status {idle_result.get('status_code')})"
+                    )
                 else:
                     self.log(f"  - Idle events: FAILED ({idle_result.get('error')})")
 
@@ -1785,10 +2375,14 @@ class MonitoringApp:
                 self.log(f"  - Upload activity (0 items): SUCCESS (No data)")
             elif upload_result:
                 if upload_result.get("success"):
-                    self.log(f"  - Upload activity ({upload_count} items): SUCCESS (Status {upload_result.get('status_code')})")
+                    self.log(
+                        f"  - Upload activity ({upload_count} items): SUCCESS (Status {upload_result.get('status_code')})"
+                    )
                 else:
-                    self.log(f"  - Upload activity: FAILED ({upload_result.get('error')})")
-        
+                    self.log(
+                        f"  - Upload activity: FAILED ({upload_result.get('error')})"
+                    )
+
         # Download logs result
         if self.enabled_features.get("download_filter"):
             # Check if we have results from this send
@@ -1796,9 +2390,13 @@ class MonitoringApp:
                 dl_result = results.get("download_logs", {})
                 dl_count = results.get("download_count_sent", 0)
                 if dl_result.get("success"):
-                    self.log(f"  - Download activity ({dl_count} items): SUCCESS (Status {dl_result.get('status_code')})")
+                    self.log(
+                        f"  - Download activity ({dl_count} items): SUCCESS (Status {dl_result.get('status_code')})"
+                    )
                 else:
-                    self.log(f"  - Download activity: FAILED ({dl_result.get('error')})")
+                    self.log(
+                        f"  - Download activity: FAILED ({dl_result.get('error')})"
+                    )
             elif download_count > 0:
                 self.log(f"  - Download activity ({download_count} items): PENDING")
             else:
@@ -1822,13 +2420,17 @@ class MonitoringApp:
             self.log(f"Interval received: {self.current_interval} seconds")
         else:
             self.current_interval = 300
-            self.log(f"Failed to fetch interval, using default: {self.current_interval}s")
+            self.log(
+                f"Failed to fetch interval, using default: {self.current_interval}s"
+            )
 
         self.is_auto_sending = True
         self.interval_label.config(text=f"Interval: {self.current_interval}s (auto)")
         self.log(f"Auto-send started (every {self.current_interval}s)")
 
-        self.auto_send_thread = threading.Thread(target=self._auto_send_loop, daemon=True)
+        self.auto_send_thread = threading.Thread(
+            target=self._auto_send_loop, daemon=True
+        )
         self.auto_send_thread.start()
 
     def stop_auto_send(self):
@@ -1843,7 +2445,7 @@ class MonitoringApp:
                     self._retry_offline_data()
 
                     location_data = self.location_tracker.get_location()
-                    
+
                     app_usage_data = self.app_monitor.get_usage_data()
                     browsing_data = self.browsing_tracker.get_new_history()
                     upload_data = self.upload_tracker.get_new_activities()
@@ -1854,64 +2456,124 @@ class MonitoringApp:
                     keystroke_count = len(keystrokes_data)
                     idle_count = len(idle_data)
                     download_count = len(self.download_logs)
-                    
+
                     screenshot_data = self.screenshot_capture.capture_and_encode()
 
                     results = self.data_sender.send_all_data_with_screenshot(
-                        app_usage_data, 
-                        browsing_data, 
-                        screenshot_data, 
-                        location_data
+                        app_usage_data, browsing_data, screenshot_data, location_data
                     )
-                    
-                    self._handle_send_results(results, app_usage_data, browsing_data, screenshot_data, location_data)
+
+                    self._handle_send_results(
+                        results,
+                        app_usage_data,
+                        browsing_data,
+                        screenshot_data,
+                        location_data,
+                    )
 
                     loc_result = self.data_sender.send_location(location_data)
                     results["location_data"] = loc_result
                     if not loc_result.get("success"):
-                        self.persistence.add_to_queue("location", {"location": location_data})
-                    
+                        self.persistence.add_to_queue(
+                            "location", {"location": location_data}
+                        )
+
                     if keystrokes_data:
-                        key_result = self.data_sender.send_keystrokes(keystrokes_data, location_data)
+                        key_result = self.data_sender.send_keystrokes(
+                            keystrokes_data, location_data
+                        )
                         results["keystrokes"] = key_result
                         if not key_result.get("success"):
-                            self.persistence.add_to_queue("keystrokes", {"keystrokes": keystrokes_data, "location": location_data})
+                            self.persistence.add_to_queue(
+                                "keystrokes",
+                                {
+                                    "keystrokes": keystrokes_data,
+                                    "location": location_data,
+                                },
+                            )
 
                     if idle_data:
-                        idle_result = self.data_sender.send_idle_events(idle_data, location_data)
+                        idle_result = self.data_sender.send_idle_events(
+                            idle_data, location_data
+                        )
                         results["idle_event"] = idle_result
                         if not idle_result.get("success"):
-                            self.persistence.add_to_queue("idle_event", {"idle_events": idle_data, "location": location_data})
+                            self.persistence.add_to_queue(
+                                "idle_event",
+                                {"idle_events": idle_data, "location": location_data},
+                            )
 
                     if upload_data:
-                        up_result = self.data_sender.send_upload_activity(upload_data, location_data)
+                        up_result = self.data_sender.send_upload_activity(
+                            upload_data, location_data
+                        )
                         results["upload_activity"] = up_result
                         if not up_result.get("success"):
-                            self.persistence.add_to_queue("upload_activity", {"upload_activities": upload_data, "location": location_data})
+                            self.persistence.add_to_queue(
+                                "upload_activity",
+                                {
+                                    "upload_activities": upload_data,
+                                    "location": location_data,
+                                },
+                            )
 
                     # Send download logs
                     download_count_sent = 0
                     if self.download_logs:
                         download_count_sent = len(self.download_logs)
-                        dl_result = self.data_sender.send_download_logs(self.download_logs)
+                        dl_result = self.data_sender.send_download_logs(
+                            self.download_logs
+                        )
                         results["download_logs"] = dl_result
                         results["download_count_sent"] = download_count_sent
                         if dl_result.get("success"):
-                            self.root.after(0, lambda: self.log(f"Download logs sent: SUCCESS ({download_count_sent} items)"))
+                            self.root.after(
+                                0,
+                                lambda: self.log(
+                                    f"Download logs sent: SUCCESS ({download_count_sent} items)"
+                                ),
+                            )
                             self.download_logs = []
                         else:
-                            self.persistence.add_to_queue("download_logs", {"download_logs": self.download_logs, "location": location_data})
-                            self.root.after(0, lambda: self.log(f"Download logs failed: {dl_result.get('error')} - Saved to queue"))
+                            self.persistence.add_to_queue(
+                                "download_logs",
+                                {
+                                    "download_logs": self.download_logs,
+                                    "location": location_data,
+                                },
+                            )
+                            self.root.after(
+                                0,
+                                lambda: self.log(
+                                    f"Download logs failed: {dl_result.get('error')} - Saved to queue"
+                                ),
+                            )
 
                     history_result = results.get("browsing_history", {})
                     if history_result.get("success"):
                         if browsing_data:
-                            latest_ts = max([h["timestamp"] for h in browsing_data if h.get("timestamp")])
+                            latest_ts = max(
+                                [
+                                    h["timestamp"]
+                                    for h in browsing_data
+                                    if h.get("timestamp")
+                                ]
+                            )
                             self.browsing_tracker.mark_as_sent(latest_ts)
                         else:
                             self.browsing_tracker.mark_as_sent()
 
-                    self.root.after(0, lambda: self._update_send_result(results, count, upload_count, keystroke_count, idle_count, download_count))
+                    self.root.after(
+                        0,
+                        lambda: self._update_send_result(
+                            results,
+                            count,
+                            upload_count,
+                            keystroke_count,
+                            idle_count,
+                            download_count,
+                        ),
+                    )
 
             except Exception as e:
                 self.root.after(0, lambda: self.log(f"Auto-send error: {e}"))
@@ -1925,6 +2587,283 @@ class MonitoringApp:
         berjalan di background selama proses MonitoringApp.exe masih aktif.
         """
         self.root.withdraw()
+
+    def _close_chat_popup(self):
+        """Tutup jendela chat (dipanggil saat admin mengakhiri sesi chat)."""
+        popup = getattr(self, "_active_chat_popup", None)
+        if popup:
+            try:
+                if popup.winfo_exists():
+                    popup.destroy()
+            except Exception:
+                pass
+            self._active_chat_popup = None
+            self._chat_text_widget = None
+            self.log("[Chat] Jendela chat ditutup")
+
+    def _show_chat_message(self, message):
+        """
+        Tampilkan/update jendela chat permanen dengan riwayat percakapan.
+        - Kalau window belum ada: buat baru di tengah layar
+        - Kalau window sudah ada: tambahkan pesan baru ke riwayat
+        - Tidak pakai grab_set() supaya tidak blokir event background
+        """
+        try:
+            import tkinter as tk
+            from tkinter import ttk
+            from datetime import datetime
+
+            self.root.deiconify()
+
+            # Buat window kalau belum ada atau sudah ditutup
+            win = getattr(self, "_active_chat_popup", None)
+            if not win or not win.winfo_exists():
+                win = tk.Toplevel(self.root)
+                self._active_chat_popup = win
+                win.title("Chat dengan Admin")
+                win.geometry("460x520")
+                win.resizable(True, True)
+                win.minsize(380, 400)
+                win.attributes("-topmost", True)
+                win.configure(bg="#ffffff")
+
+                # Posisi tengah layar
+                win.update_idletasks()
+                sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+                win.geometry(f"460x520+{(sw//2)-230}+{(sh//2)-260}")
+
+                # === HEADER ===
+                hdr = tk.Frame(win, bg="#1e293b", height=48)
+                hdr.pack(fill="x", side="top")
+                hdr.pack_propagate(False)
+                tk.Label(
+                    hdr,
+                    text="Chat dengan Admin",
+                    font=("Segoe UI", 12, "bold"),
+                    bg="#1e293b",
+                    fg="white",
+                ).pack(expand=True)
+
+                # === INPUT AREA — pack DULU (bottom) supaya tidak tergeser ===
+                inp_frame = tk.Frame(
+                    win, bg="#f8fafc", bd=1, relief="flat", pady=8, padx=10
+                )
+                inp_frame.pack(side="bottom", fill="x")
+
+                # Separator
+                sep = tk.Frame(win, bg="#e2e8f0", height=1)
+                sep.pack(side="bottom", fill="x")
+
+                row = tk.Frame(inp_frame, bg="#f8fafc")
+                row.pack(fill="x")
+
+                reply_var = tk.StringVar()
+                entry = tk.Entry(
+                    row,
+                    textvariable=reply_var,
+                    font=("Segoe UI", 11),
+                    relief="solid",
+                    bd=1,
+                    bg="white",
+                    fg="#1e293b",
+                )
+                entry.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 8))
+
+                send_btn = tk.Button(
+                    row,
+                    text="Kirim",
+                    font=("Segoe UI", 10, "bold"),
+                    bg="#3b82f6",
+                    fg="white",
+                    relief="flat",
+                    cursor="hand2",
+                    padx=16,
+                    pady=6,
+                )
+                send_btn.pack(side="right")
+
+                # === AREA RIWAYAT CHAT — pack setelah input ===
+                chat_frame = tk.Frame(win, bg="#ffffff")
+                chat_frame.pack(side="top", fill="both", expand=True, padx=0, pady=0)
+
+                scrollbar = tk.Scrollbar(chat_frame)
+                scrollbar.pack(side="right", fill="y")
+
+                txt = tk.Text(
+                    chat_frame,
+                    wrap="word",
+                    font=("Segoe UI", 10),
+                    state="disabled",
+                    yscrollcommand=scrollbar.set,
+                    bg="#ffffff",
+                    relief="flat",
+                    padx=12,
+                    pady=8,
+                    spacing1=2,
+                    spacing3=2,
+                )
+                txt.pack(side="left", fill="both", expand=True)
+                scrollbar.config(command=txt.yview)
+
+                # Tag styling
+                txt.tag_config(
+                    "admin_name", foreground="#2563eb", font=("Segoe UI", 9, "bold")
+                )
+                txt.tag_config(
+                    "agent_name", foreground="#16a34a", font=("Segoe UI", 9, "bold")
+                )
+                txt.tag_config("msg_text", foreground="#1e293b", font=("Segoe UI", 10))
+                txt.tag_config("time_tag", foreground="#94a3b8", font=("Segoe UI", 8))
+                txt.tag_config("divider", foreground="#e2e8f0", font=("Segoe UI", 6))
+
+                self._chat_text_widget = txt
+
+                def send_reply(event=None):
+                    text = reply_var.get().strip()
+                    if not text:
+                        return
+                    reply_var.set("")
+                    entry.focus_set()
+                    _append_message("agent", text)
+                    try:
+                        self.data_sender.send_chat_reply(text)
+                        self.log(f"[Chat] Balasan terkirim: {text}")
+                    except Exception as _e:
+                        self.log(f"[Chat] Gagal kirim: {_e}")
+
+                entry.bind("<Return>", send_reply)
+                send_btn.config(command=send_reply)
+                entry.focus_set()
+
+                def on_close():
+                    self._active_chat_popup = None
+                    self._chat_text_widget = None
+                    win.destroy()
+
+                win.protocol("WM_DELETE_WINDOW", on_close)
+                win.lift()
+                win.focus_force()
+
+            def _append_message(sender, text):
+                """Tambah pesan ke text widget riwayat chat."""
+                tw = getattr(self, "_chat_text_widget", None)
+                if not tw:
+                    return
+                try:
+                    tw.config(state="normal")
+                    now = datetime.now().strftime("%H:%M")
+                    name = "Admin" if sender == "admin" else "Kamu"
+                    name_tag = "admin_name" if sender == "admin" else "agent_name"
+                    tw.insert("end", name + "\n", name_tag)
+                    tw.insert("end", text + "\n", "msg_text")
+                    tw.insert("end", now + "\n\n", "time_tag")
+                    tw.config(state="disabled")
+                    tw.see("end")
+                except Exception:
+                    pass
+
+            # Tambah pesan admin ke riwayat
+            _append_message("admin", message)
+            win.lift()
+            win.attributes("-topmost", True)
+            self.log(f"[Chat] Pesan diterima: {message[:30]}")
+
+        except Exception as _e:
+            self.log(f"[Chat] Error tampilkan window: {_e}")
+
+        entry.bind("<Return>", lambda e: send_reply())
+        win.protocol("WM_DELETE_WINDOW", close_only)
+
+    def _start_fast_action_loop(self):
+        """
+        Thread dedicated cek device_actions tiap 5 detik — khusus untuk
+        aksi yang butuh respons cepat (Terminate, Shutdown, dll) tanpa
+        menunggu connection_check_interval yang bisa 30-60 detik.
+        """
+        import threading as _t
+        import subprocess as _sp
+
+        def _loop():
+            import time
+
+            while True:
+                time.sleep(5)
+                try:
+                    if not self.data_sender.is_registered():
+                        continue
+
+                    # Cek pesan chat dari admin
+                    try:
+                        chat_result = self.data_sender.fetch_chat_messages()
+                        msgs = chat_result.get("messages", [])
+                        for msg in msgs:
+                            if msg.get("message") == "__CHAT_ENDED__":
+                                # Sinyal akhiri chat dari admin - tutup popup
+                                self.root.after(0, self._close_chat_popup)
+                                self.log(
+                                    "[Chat] Sinyal akhiri chat diterima, popup ditutup"
+                                )
+                            else:
+                                self.root.after(
+                                    0,
+                                    lambda m=msg["message"]: self._show_chat_message(m),
+                                )
+                                self.log(
+                                    f"[Chat] Pesan masuk: {msg.get('message','')[:30]}"
+                                )
+                    except Exception as _ce:
+                        self.log(f"[Chat] Error cek pesan: {_ce}")
+
+                    result = self.data_sender.fetch_pending_actions()
+                    if not result.get("success"):
+                        continue
+                    actions = result.get("actions", [])
+                    for action in actions:
+                        atype = action.get("action_type", "")
+                        details = action.get("details") or ""
+                        aid = action.get("id")
+                        if atype == "Terminate App":
+                            app_name = details.strip()
+                            self.log(f"[FastAction] Terminate: '{app_name}'")
+                            try:
+                                r = _sp.run(
+                                    ["taskkill", "/F", "/IM", app_name],
+                                    creationflags=_sp.CREATE_NO_WINDOW,
+                                    timeout=8,
+                                    capture_output=True,
+                                    text=True,
+                                )
+                                if r.returncode == 0:
+                                    self.log(
+                                        f"[FastAction] SUCCESS: {r.stdout.strip()}"
+                                    )
+                                else:
+                                    self.log(
+                                        f"[FastAction] taskkill rc={r.returncode}: {r.stderr.strip()}"
+                                    )
+                                    # Fallback psutil
+                                    try:
+                                        import psutil as _ps
+
+                                        for p in _ps.process_iter(["name", "pid"]):
+                                            if (
+                                                p.info["name"].lower()
+                                                == app_name.lower()
+                                            ):
+                                                p.kill()
+                                                self.log(
+                                                    f"[FastAction] psutil killed {p.info['pid']}"
+                                                )
+                                    except Exception:
+                                        pass
+                            except Exception as _e:
+                                self.log(f"[FastAction] Error: {_e}")
+                            self.data_sender.acknowledge_action(aid, "completed")
+                except Exception as _e:
+                    self.log(f"[FastAction] Loop error: {_e}")
+
+        _t.Thread(target=_loop, daemon=True).start()
+        self.log("Fast action loop started (cek tiap 5 detik)")
 
 
 def _ensure_single_instance():
@@ -1952,62 +2891,6 @@ def _ensure_single_instance():
         # Kalau gagal cek (misal pywin32 bermasalah), tetap lanjut jalan
         # daripada aplikasi tidak jalan sama sekali.
         return True
-
-
-    def _start_fast_action_loop(self):
-        """
-        Thread dedicated cek device_actions tiap 5 detik — khusus untuk
-        aksi yang butuh respons cepat (Terminate, Shutdown, dll) tanpa
-        menunggu connection_check_interval yang bisa 30-60 detik.
-        """
-        import threading as _t
-        import subprocess as _sp
-
-        def _loop():
-            import time
-            while True:
-                time.sleep(5)
-                try:
-                    if not self.data_sender.is_registered():
-                        continue
-                    result = self.data_sender.fetch_pending_actions()
-                    if not result.get("success"):
-                        continue
-                    actions = result.get("actions", [])
-                    for action in actions:
-                        atype   = action.get("action_type", "")
-                        details = action.get("details") or ""
-                        aid     = action.get("id")
-                        if atype == "Terminate App":
-                            app_name = details.strip()
-                            self.log(f"[FastAction] Terminate: '{app_name}'")
-                            try:
-                                r = _sp.run(
-                                    ["taskkill", "/F", "/IM", app_name],
-                                    creationflags=_sp.CREATE_NO_WINDOW,
-                                    timeout=8, capture_output=True, text=True
-                                )
-                                if r.returncode == 0:
-                                    self.log(f"[FastAction] SUCCESS: {r.stdout.strip()}")
-                                else:
-                                    self.log(f"[FastAction] taskkill rc={r.returncode}: {r.stderr.strip()}")
-                                    # Fallback psutil
-                                    try:
-                                        import psutil as _ps
-                                        for p in _ps.process_iter(["name","pid"]):
-                                            if p.info["name"].lower() == app_name.lower():
-                                                p.kill()
-                                                self.log(f"[FastAction] psutil killed {p.info['pid']}")
-                                    except Exception:
-                                        pass
-                            except Exception as _e:
-                                self.log(f"[FastAction] Error: {_e}")
-                            self.data_sender.acknowledge_action(aid, "completed")
-                except Exception as _e:
-                    self.log(f"[FastAction] Loop error: {_e}")
-
-        _t.Thread(target=_loop, daemon=True).start()
-        self.log("Fast action loop started (cek tiap 5 detik)")
 
 
 def main():
