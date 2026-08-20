@@ -167,25 +167,32 @@ class DataSender:
         except:
             pass
 
-        # Detail Tambahan via WMIC (Manufacturer, Model)
+       # Detail Tambahan (Manufacturer, Model)
         manufacturer = "Unknown"
         model = "Unknown"
+
         try:
             if platform.system() == "Windows":
-                # creationflags=CREATE_NO_WINDOW mencegah CMD popup sekilas muncul.
-                # Tanpa ini, setiap panggilan wmic (yang terjadi di SETIAP pengiriman
-                # data ke server) akan memunculkan jendela console hitam sekilas,
-                # karena aplikasi ini dibuild --windowed (tanpa console sendiri).
-                no_window = subprocess.CREATE_NO_WINDOW
-                manufacturer = subprocess.check_output(
-                    'wmic computersystem get manufacturer',
-                    creationflags=no_window
-                ).decode().split('\n')[1].strip()
-                model = subprocess.check_output(
-                    'wmic computersystem get model',
-                    creationflags=no_window
-                ).decode().split('\n')[1].strip()
-        except:
+                result = subprocess.check_output(
+                    [
+                        "powershell.exe",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        "Get-CimInstance Win32_ComputerSystem | "
+                        "Select-Object Manufacturer, Model | "
+                        "ConvertTo-Json -Compress"
+                    ],
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    stderr=subprocess.DEVNULL
+                ).decode("utf-8", errors="ignore").strip()
+
+                info = json.loads(result)
+
+                manufacturer = info.get("Manufacturer") or "Unknown"
+                model = info.get("Model") or "Unknown"
+
+        except Exception:
             pass
 
         return {
