@@ -850,3 +850,39 @@ class DataSender:
             return {"success": False, "messages": []}
         except Exception:
             return {"success": False, "messages": []}
+
+    # ── Reverb WebSocket Config ─────────────────────────────────────────────────
+    def fetch_reverb_config(self):
+        """Ambil konfigurasi Reverb untuk connect WebSocket."""
+        if not self.is_registered():
+            return None
+        try:
+            r = requests.get(
+                f"{self.server_url}/chat/reverb-config",
+                headers=self._headers(with_json=False),
+                timeout=5
+            )
+            if r.status_code == 200:
+                return r.json()
+            return None
+        except Exception:
+            return None
+
+    def get_channel_auth(self, socket_id, channel_name):
+        """Dapatkan auth signature untuk private Reverb channel."""
+        if not self.is_registered():
+            return None
+        try:
+            # base_url = tanpa /api/monitoring
+            base = self.server_url.replace('/api/monitoring', '').rstrip('/')
+            r = requests.post(
+                f"{base}/broadcasting/auth",
+                json={"socket_id": socket_id, "channel_name": channel_name},
+                headers=self._headers(),
+                timeout=5
+            )
+            if r.status_code == 200:
+                return r.json().get("auth")
+            return None
+        except Exception:
+            return None

