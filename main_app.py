@@ -41,7 +41,8 @@ class MonitoringApp:
         self.root.title("Monitoring Data - System Monitor")
         
         self.root.state('zoomed')
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)  # Bisa fullscreen
+        self.root.minsize(900, 600)   # Ukuran minimum
         
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
