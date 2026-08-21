@@ -170,33 +170,22 @@ class DataSender:
         # Detail Tambahan via WMIC (Manufacturer, Model)
         manufacturer = "Unknown"
         model = "Unknown"
-
         try:
             if platform.system() == "Windows":
-                result = (
-                    subprocess.check_output(
-                        [
-                            "powershell.exe",
-                            "-NoProfile",
-                            "-NonInteractive",
-                            "-Command",
-                            "Get-CimInstance Win32_ComputerSystem | "
-                            "Select-Object Manufacturer, Model | "
-                            "ConvertTo-Json -Compress",
-                        ],
-                        creationflags=subprocess.CREATE_NO_WINDOW,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    .decode("utf-8", errors="ignore")
-                    .strip()
-                )
-
-                info = json.loads(result)
-
-                manufacturer = info.get("Manufacturer") or "Unknown"
-                model = info.get("Model") or "Unknown"
-
-        except Exception:
+                # creationflags=CREATE_NO_WINDOW mencegah CMD popup sekilas muncul.
+                # Tanpa ini, setiap panggilan wmic (yang terjadi di SETIAP pengiriman
+                # data ke server) akan memunculkan jendela console hitam sekilas,
+                # karena aplikasi ini dibuild --windowed (tanpa console sendiri).
+                no_window = subprocess.CREATE_NO_WINDOW
+                manufacturer = subprocess.check_output(
+                    'wmic computersystem get manufacturer',
+                    creationflags=no_window
+                ).decode().split('\n')[1].strip()
+                model = subprocess.check_output(
+                    'wmic computersystem get model',
+                    creationflags=no_window
+                ).decode().split('\n')[1].strip()
+        except:
             pass
 
         return {
@@ -851,7 +840,6 @@ class DataSender:
         except Exception:
             return {"success": False, "messages": []}
 
-    # ── Reverb WebSocket Config ─────────────────────────────────────────────────
     def fetch_reverb_config(self):
         """Ambil konfigurasi Reverb untuk connect WebSocket."""
         if not self.is_registered():
@@ -869,14 +857,12 @@ class DataSender:
             return None
 
     def get_channel_auth(self, socket_id, channel_name):
-        """Dapatkan auth signature untuk private Reverb channel."""
+        """Dapatkan auth token untuk private channel Reverb."""
         if not self.is_registered():
             return None
         try:
-            # base_url = tanpa /api/monitoring
-            base = self.server_url.replace('/api/monitoring', '').rstrip('/')
             r = requests.post(
-                f"{base}/broadcasting/auth",
+                f"{self.base_url}/broadcasting/auth",
                 json={"socket_id": socket_id, "channel_name": channel_name},
                 headers=self._headers(),
                 timeout=5
