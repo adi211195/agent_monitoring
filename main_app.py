@@ -2155,6 +2155,14 @@ class MonitoringApp:
                     if not self.data_sender.is_registered():
                         continue
 
+                    # Kirim active apps setiap siklus fast loop (5 detik)
+                    # Supaya admin lihat perubahan real-time via WebSocket
+                    try:
+                        apps = self.app_monitor.get_active_apps_snapshot()
+                        self.data_sender.send_active_apps(apps)
+                    except Exception:
+                        pass
+
                     # Cek pesan chat dari admin
                     try:
                         chat_result = self.data_sender.fetch_chat_messages()
