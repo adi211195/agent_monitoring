@@ -1266,6 +1266,33 @@ class MonitoringApp:
         self.last_config_label.grid(row=4, column=3, sticky="w", padx=(8, 40))
 
         # -------------------------------
+        # Chat Support button di tab Monitoring
+        # -------------------------------
+        chat_support_frame = tk.Frame(self.tab_monitoring, bg=self.bg_color)
+        chat_support_frame.pack(fill="x", pady=(8, 0), padx=20)
+
+        tk.Button(
+            chat_support_frame,
+            text="💬  Chat Support",
+            font=("Segoe UI", 10, "bold"),
+            bg="#3b82f6",
+            fg="white",
+            relief="flat",
+            cursor="hand2",
+            pady=8,
+            padx=16,
+            command=self._open_chat_support
+        ).pack(side="left")
+
+        tk.Label(
+            chat_support_frame,
+            text="  Kirim pesan langsung ke admin",
+            font=("Segoe UI", 9),
+            fg=self.secondary_text_color,
+            bg=self.bg_color
+        ).pack(side="left", padx=(8, 0))
+
+        # -------------------------------
         # Tab 2: Log
         # -------------------------------
         self.tab_log = tk.Frame(self.notebook, bg=self.bg_color)
@@ -1341,10 +1368,7 @@ class MonitoringApp:
         self.tab_features = tk.Frame(self.notebook, bg=self.bg_color)
         self.notebook.add(self.tab_features, text="Features")
 
-        # ── TAB CHAT (agent bisa initiate chat duluan) ───────────────────────────
-        self.tab_chat = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_chat, text="Chat")
-        self._setup_chat_tab()
+
 
         feature_container = tk.LabelFrame(
             self.tab_features, 
@@ -1934,65 +1958,7 @@ class MonitoringApp:
 
 
 
-    def _setup_chat_tab(self):
-        import tkinter as tk
-        from tkinter import ttk
-        tab = self.tab_chat
-        hdr = tk.Frame(tab, bg="#1e293b", pady=10)
-        hdr.pack(fill="x")
-        tk.Label(hdr, text="Chat dengan Admin", font=("Segoe UI", 12, "bold"), bg="#1e293b", fg="white").pack()
-        self._chat_tab_status = tk.StringVar(value="Ketik pesan dan tekan Enter")
-        tk.Label(tab, textvariable=self._chat_tab_status, font=("Segoe UI", 9), fg="#64748b").pack(fill="x", padx=10, pady=(4,0))
-        cf = tk.Frame(tab)
-        cf.pack(side="top", fill="both", expand=True, padx=10, pady=(4,0))
-        sb = tk.Scrollbar(cf)
-        sb.pack(side="right", fill="y")
-        self._chat_tab_text = tk.Text(cf, wrap="word", font=("Segoe UI", 10), state="disabled",
-            yscrollcommand=sb.set, bg="#ffffff", relief="flat", padx=12, pady=8)
-        self._chat_tab_text.pack(side="left", fill="both", expand=True)
-        sb.config(command=self._chat_tab_text.yview)
-        self._chat_tab_text.tag_config("admin_name", foreground="#2563eb", font=("Segoe UI", 9, "bold"))
-        self._chat_tab_text.tag_config("agent_name", foreground="#16a34a", font=("Segoe UI", 9, "bold"))
-        self._chat_tab_text.tag_config("msg_text", foreground="#1e293b", font=("Segoe UI", 10))
-        self._chat_tab_text.tag_config("time_tag", foreground="#94a3b8", font=("Segoe UI", 8))
-        tk.Frame(tab, bg="#e2e8f0", height=1).pack(fill="x", padx=10, pady=(4,0))
-        inp = tk.Frame(tab, bg="#f8fafc", pady=8, padx=10)
-        inp.pack(side="bottom", fill="x")
-        row = tk.Frame(inp, bg="#f8fafc")
-        row.pack(fill="x")
-        self._chat_tab_var = tk.StringVar()
-        entry = tk.Entry(row, textvariable=self._chat_tab_var, font=("Segoe UI", 11), relief="solid", bd=1, bg="white")
-        entry.pack(side="left", fill="x", expand=True, ipady=6, padx=(0,8))
-        def send_from_tab(event=None):
-            text = self._chat_tab_var.get().strip()
-            if not text: return
-            self._chat_tab_var.set("")
-            self._append_to_chat_tab("agent", text)
-            try:
-                self.data_sender.send_agent_chat(text)
-                self._chat_tab_status.set("Terkirim")
-            except Exception as _e:
-                self._chat_tab_status.set(f"Gagal: {_e}")
-        entry.bind("<Return>", send_from_tab)
-        tk.Button(row, text="Kirim", font=("Segoe UI", 10, "bold"), bg="#3b82f6", fg="white",
-                  relief="flat", cursor="hand2", padx=16, pady=6, command=send_from_tab).pack(side="right")
 
-    def _append_to_chat_tab(self, sender, text, time_str=None):
-        from datetime import datetime
-        tw = getattr(self, '_chat_tab_text', None)
-        if not tw: return
-        try:
-            now = time_str or datetime.now().strftime("%H:%M")
-            tw.config(state="normal")
-            name = "Admin" if sender == "admin" else "Kamu"
-            tag  = "admin_name" if sender == "admin" else "agent_name"
-            tw.insert("end", name + "\n", tag)
-            tw.insert("end", text + "\n", "msg_text")
-            tw.insert("end", now + "\n\n", "time_tag")
-            tw.config(state="disabled")
-            tw.see("end")
-        except Exception:
-            pass
 
     def _close_chat_popup(self):
         """Tutup jendela chat (dipanggil saat admin mengakhiri sesi chat)."""
@@ -2148,9 +2114,13 @@ class MonitoringApp:
                 except Exception:
                     pass
 
-            # Tambah pesan admin ke riwayat (window popup + tab chat)
+            # Tambah pesan admin ke riwayat
             _append_message("admin", message)
-            self._append_to_chat_tab("admin", message)
+            # Juga update tab chat kalau ada
+            fn = getattr(self, '_chat_append_fn', None)
+            if fn:
+                try: fn("admin", message)
+                except Exception: pass
             win.lift()
             win.attributes("-topmost", True)
             self.log(f"[Chat] Pesan diterima: {message[:30]}")
@@ -2234,6 +2204,124 @@ class MonitoringApp:
         self.log("Fast action loop started (cek tiap 5 detik)")
 
 
+
+
+    def _open_chat_support(self):
+        """Buka popup chat - agent bisa kirim pesan ke admin duluan."""
+        import tkinter as tk
+        from tkinter import ttk
+        from datetime import datetime
+
+        existing = getattr(self, '_active_chat_popup', None)
+        if existing:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except Exception:
+                pass
+
+        self.root.deiconify()
+        win = tk.Toplevel(self.root)
+        self._active_chat_popup = win
+        win.title("Chat dengan Admin")
+        win.geometry("460x520")
+        win.resizable(True, True)
+        win.minsize(380, 400)
+        win.attributes("-topmost", True)
+        win.configure(bg="#ffffff")
+        win.update_idletasks()
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        win.geometry(f"460x520+{(sw//2)-230}+{(sh//2)-260}")
+
+        hdr = tk.Frame(win, bg="#1e293b", height=48)
+        hdr.pack(fill="x", side="top")
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="Chat dengan Admin",
+                 font=("Segoe UI", 12, "bold"),
+                 bg="#1e293b", fg="white").pack(expand=True)
+
+        inp_frame = tk.Frame(win, bg="#f8fafc", pady=8, padx=10)
+        inp_frame.pack(side="bottom", fill="x")
+        tk.Frame(win, bg="#e2e8f0", height=1).pack(side="bottom", fill="x")
+
+        row = tk.Frame(inp_frame, bg="#f8fafc")
+        row.pack(fill="x")
+        reply_var = tk.StringVar()
+        entry = tk.Entry(row, textvariable=reply_var,
+                         font=("Segoe UI", 11), relief="solid", bd=1,
+                         bg="white", fg="#1e293b")
+        entry.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 8))
+        send_btn = tk.Button(row, text="Kirim",
+                             font=("Segoe UI", 10, "bold"),
+                             bg="#3b82f6", fg="white",
+                             relief="flat", cursor="hand2",
+                             padx=16, pady=6)
+        send_btn.pack(side="right")
+
+        chat_frame = tk.Frame(win, bg="#ffffff")
+        chat_frame.pack(side="top", fill="both", expand=True)
+        sb = tk.Scrollbar(chat_frame)
+        sb.pack(side="right", fill="y")
+        txt = tk.Text(chat_frame, wrap="word", font=("Segoe UI", 10),
+                      state="disabled", yscrollcommand=sb.set,
+                      bg="#ffffff", relief="flat", padx=12, pady=8)
+        txt.pack(side="left", fill="both", expand=True)
+        sb.config(command=txt.yview)
+        txt.tag_config("admin_name", foreground="#2563eb", font=("Segoe UI", 9, "bold"))
+        txt.tag_config("agent_name", foreground="#16a34a", font=("Segoe UI", 9, "bold"))
+        txt.tag_config("msg_text",   foreground="#1e293b", font=("Segoe UI", 10))
+        txt.tag_config("time_tag",   foreground="#94a3b8", font=("Segoe UI", 8))
+        self._chat_text_widget = txt
+
+        def _append(sender, text):
+            tw = getattr(self, '_chat_text_widget', None)
+            if not tw: return
+            try:
+                now = datetime.now().strftime("%H:%M")
+                tw.config(state="normal")
+                name = "Admin" if sender == "admin" else "Kamu"
+                tag  = "admin_name" if sender == "admin" else "agent_name"
+                tw.insert("end", name + "\n", tag)
+                tw.insert("end", text + "\n", "msg_text")
+                tw.insert("end", now + "\n\n", "time_tag")
+                tw.config(state="disabled")
+                tw.see("end")
+            except Exception:
+                pass
+
+        self._chat_append_fn = _append
+
+        def send_reply(event=None):
+            text = reply_var.get().strip()
+            if not text: return
+            if not self.data_sender.is_registered():
+                self.log("[Chat] Belum terhubung ke server")
+                return
+            reply_var.set("")
+            entry.focus_set()
+            _append("agent", text)
+            try:
+                self.data_sender.send_agent_chat(text)
+                self.log(f"[Chat] Pesan terkirim: {text[:30]}")
+            except Exception as _e:
+                self.log(f"[Chat] Gagal kirim: {_e}")
+
+        entry.bind("<Return>", send_reply)
+        send_btn.config(command=send_reply)
+        entry.focus_set()
+
+        def on_close():
+            self._active_chat_popup = None
+            self._chat_text_widget  = None
+            self._chat_append_fn    = None
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", on_close)
+        win.lift()
+        win.focus_force()
+        self.log("[Chat] Popup chat support dibuka")
 
 
 def _ensure_single_instance():
