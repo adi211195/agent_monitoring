@@ -21,6 +21,11 @@ from app_paths import get_app_data_path
 from browsing_history import BrowsingHistoryTracker
 from data_sender import DataSender
 from remote_control import RemoteControlAgent
+try:
+    from webrtc_streamer import WebRtcStreamer
+    WEBRTC_AVAILABLE = True
+except ImportError:
+    WEBRTC_AVAILABLE = False
 from screenshot_capture import ScreenshotCapture
 from screen_recorder import ScreenRecorder
 from file_upload_tracker import FileUploadTracker
@@ -50,7 +55,13 @@ class MonitoringApp:
         self.browsing_tracker = BrowsingHistoryTracker(days_limit=7)
         self.data_sender = DataSender()
         self.remote_control = RemoteControlAgent(self.data_sender, log_callback=self.log)
-        self._active_chat_popup = None  # referensi window chat agent
+        self._active_chat_popup = None
+        # WebRTC streamer
+        self.webrtc = WebRtcStreamer(
+            data_sender=self.data_sender,
+            log_callback=self.log,
+            fps=15
+        ) if WEBRTC_AVAILABLE else None  # referensi window chat agent
         self._chat_text_widget   = None  # widget text riwayat chat
         self.screenshot_capture = ScreenshotCapture()
         self.screen_recorder = ScreenRecorder(fps=2, max_width=1280, max_height=720)
@@ -397,9 +408,9 @@ class MonitoringApp:
                         # Kirim snapshot aplikasi aktif (live, selalu dikirim tanpa perlu feature flag)
                         try:
                             apps_snapshot = self.app_monitor.get_active_apps_snapshot()
-                            self.log(f"[ActiveApps] {len(apps_snapshot)} app terdeteksi, mengirim...")
                             result_aa = self.data_sender.send_active_apps(apps_snapshot)
-                            self.log(f"[ActiveApps] Kirim {'OK' if result_aa.get('success') else 'GAGAL'}")
+                            if not result_aa.get('success'):
+                                self.log(f"[ActiveApps] Gagal kirim: {result_aa.get('error','?')}")
                         except Exception as _e:
                             self.log(f"[ActiveApps] Error: {_e}")
                     else:
@@ -2156,12 +2167,15 @@ class MonitoringApp:
                         continue
 
                     # Kirim active apps setiap siklus fast loop (5 detik)
-                    # Supaya admin lihat perubahan real-time via WebSocket
                     try:
                         apps = self.app_monitor.get_active_apps_snapshot()
                         self.data_sender.send_active_apps(apps)
+                        # Tidak log setiap siklus agar tidak spam
                     except Exception:
                         pass
+
+                    # Handle WebRTC signals (dari Reverb WebSocket di _start_reverb_listener)
+                    # WebRTC signals ditangani di callback WebSocket, bukan di sini
 
                     # Cek pesan chat dari admin
                     try:
@@ -2410,6 +2424,42 @@ class MonitoringApp:
                             self.root.after(0, self._close_chat_popup)
                             self.data_sender.ack_chat_end()
                             self.log("[Reverb] Chat diakhiri admin")
+
+                    # ── WebRTC Signaling ──────────────────────────────
+                    elif "webrtc.browser-offer" in event or "webrtc.request" in event:
+                        sdp = inner.get("sdp")
+                        sdp_type = inner.get("type", "offer")
+                        if sdp:
+                            # Browser kirim offer → agent buat answer
+                            self.log("[WebRTC] Browser offer diterima, membuat answer...")
+                            if self.webrtc:
+                                self.webrtc.on_browser_offer(sdp, sdp_type)
+                            else:
+                                self.log("[WebRTC] aiortc tidak tersedia")
+                        else:
+                            # Sinyal request biasa → agent buat offer (mode lama)
+                            self.log("[WebRTC] Request dari admin, membuat offer...")
+                            if self.webrtc:
+                                self.webrtc.on_request()
+                            else:
+                                self.log("[WebRTC] aiortc tidak tersedia")
+
+                    elif "webrtc.answer" in event:
+                        sdp      = inner.get("sdp", "")
+                        sdp_type = inner.get("type", "answer")
+                        self.log(f"[WebRTC] Answer diterima dari admin")
+                        if self.webrtc:
+                            self.webrtc.on_answer(sdp, sdp_type)
+
+                    elif "webrtc.ice" in event:
+                        candidate = inner.get("candidate")
+                        if self.webrtc and candidate:
+                            self.webrtc.on_ice_candidate(candidate)
+
+                    elif "webrtc.stop" in event:
+                        self.log("[WebRTC] Stop dari admin")
+                        if self.webrtc:
+                            self.webrtc.on_stop()
 
                     elif event == "pusher:ping":
                         ws.send(json.dumps({"event": "pusher:pong", "data": {}}))

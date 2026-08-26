@@ -857,12 +857,13 @@ class DataSender:
             return None
 
     def get_channel_auth(self, socket_id, channel_name):
-        """Dapatkan auth token untuk private channel Reverb."""
+        """Dapatkan auth token untuk private channel Reverb via Sanctum API."""
         if not self.is_registered():
             return None
         try:
+            # Endpoint /api/monitoring/broadcasting/auth (auth via Sanctum token)
             r = requests.post(
-                f"{self.base_url}/broadcasting/auth",
+                f"{self.server_url}/broadcasting/auth",
                 json={"socket_id": socket_id, "channel_name": channel_name},
                 headers=self._headers(),
                 timeout=5
@@ -872,3 +873,46 @@ class DataSender:
             return None
         except Exception:
             return None
+
+    # ── WebRTC Signaling ─────────────────────────────────────────────────
+    def send_webrtc_offer(self, sdp: str, sdp_type: str):
+        """Agent kirim SDP offer ke server → diteruskan ke admin."""
+        if not self.is_registered():
+            return
+        try:
+            requests.post(
+                f"{self.server_url}/webrtc/offer",
+                json={"sdp": sdp, "type": sdp_type},
+                headers=self._headers(),
+                timeout=10,
+            )
+        except Exception as e:
+            pass
+
+    def send_webrtc_ice(self, candidate: dict):
+        """Agent kirim ICE candidate ke server → diteruskan ke admin."""
+        if not self.is_registered():
+            return
+        try:
+            requests.post(
+                f"{self.server_url}/webrtc/ice",
+                json={"candidate": candidate},
+                headers=self._headers(),
+                timeout=5,
+            )
+        except Exception:
+            pass
+
+    def send_webrtc_answer(self, sdp: str, sdp_type: str):
+        """Agent kirim SDP answer ke server → diteruskan ke admin."""
+        if not self.is_registered():
+            return
+        try:
+            requests.post(
+                f"{self.server_url}/webrtc/offer",  # reuse same endpoint, type=answer
+                json={"sdp": sdp, "type": sdp_type},
+                headers=self._headers(),
+                timeout=10,
+            )
+        except Exception:
+            pass
