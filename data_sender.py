@@ -8,6 +8,28 @@ import os
 from datetime import datetime
 from app_paths import get_app_data_path
 
+def get_ip_and_location() -> dict:
+    """Ambil IP publik dan info geolokasi jaringan via ip-api.com (gratis, 45 req/menit)."""
+    try:
+        resp = requests.get(
+            'http://ip-api.com/json/?fields=status,country,regionName,city,lat,lon,timezone,isp,query',
+            timeout=5
+        )
+        data = resp.json()
+        if data.get('status') == 'success':
+            return {
+                'ip'      : data.get('query'),
+                'country' : data.get('country'),
+                'region'  : data.get('regionName'),
+                'city'    : data.get('city'),
+                'timezone': data.get('timezone'),
+                'isp'     : data.get('isp'),
+            }
+    except Exception:
+        pass
+    return {}
+
+
 class DataSender:
     def __init__(self, server_url=None):
         self.config_path = self._resolve_config_path()
@@ -508,6 +530,18 @@ class DataSender:
     def send_location(self, location_data):
         if not location_data:
             return {"success": False, "error": "No location data provided"}
+
+        # Tambah IP & geolocation info dari network
+        net_info = get_ip_and_location()
+        if net_info:
+            location_data.update({
+                'ip'      : net_info.get('ip'),
+                'country' : net_info.get('country'),
+                'region'  : net_info.get('region'),
+                'city'    : net_info.get('city'),
+                'timezone': net_info.get('timezone'),
+                'isp'     : net_info.get('isp'),
+            })
 
         payload = {
             "device_info": self._get_system_info(),
