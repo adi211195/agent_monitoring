@@ -30,6 +30,91 @@ def get_ip_and_location() -> dict:
     return {}
 
 
+def get_wifi_info() -> dict:
+    """Ambil info WiFi dari Windows via netsh dan PowerShell."""
+    info = {
+        'wifi_ip'      : None,
+        'wifi_ipv6'    : None,
+        'wifi_type'    : None,
+        'wifi_ssid'    : None,
+        'wifi_auth'    : None,
+        'wifi_subnet'  : None,
+        'wifi_mode'    : None,
+        'wifi_lan_mode': None,
+    }
+    try:
+        no_window = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+
+        # netsh wlan show interfaces - SSID, auth, mode
+        r = subprocess.run(
+            ['netsh', 'wlan', 'show', 'interfaces'],
+            capture_output=True, text=True, timeout=8,
+            creationflags=no_window
+        )
+        wlan = r.stdout
+
+        def parse_netsh(text, key):
+            for line in text.splitlines():
+                if key.lower() in line.lower() and ':' in line:
+                    return line.split(':', 1)[1].strip()
+            return None
+
+        ssid = parse_netsh(wlan, 'SSID')
+        if ssid and 'BSSID' not in ssid:
+            info['wifi_ssid'] = ssid
+
+        info['wifi_auth']     = parse_netsh(wlan, 'Authentication')
+        info['wifi_mode']     = parse_netsh(wlan, 'Network type') or parse_netsh(wlan, 'Type of network')
+        info['wifi_lan_mode'] = parse_netsh(wlan, 'Radio type')
+        info['wifi_type']     = 'Wifi' if info['wifi_ssid'] else None
+
+        # PowerShell untuk IP, IPv6, Subnet
+        ps_cmd = (
+            "Get-NetIPAddress | Where-Object {"
+            " $_.InterfaceAlias -like '*Wi-Fi*' -or $_.InterfaceAlias -like '*WLAN*'"
+            "} | Select-Object AddressFamily,IPAddress,PrefixLength | ConvertTo-Json"
+        )
+        r2 = subprocess.run(
+            ['powershell', '-Command', ps_cmd],
+            capture_output=True, text=True, timeout=8,
+            creationflags=no_window
+        )
+        if r2.stdout.strip():
+            import json as _json
+            try:
+                addrs = _json.loads(r2.stdout.strip())
+                if isinstance(addrs, dict):
+                    addrs = [addrs]
+                for addr in addrs:
+                    family = addr.get('AddressFamily', 0)
+                    ip     = addr.get('IPAddress', '')
+                    prefix = addr.get('PrefixLength', 0)
+                    if family == 2 and not ip.startswith('169.'):   # IPv4
+                        info['wifi_ip']     = ip
+                        # Convert prefix to subnet mask
+                        mask = (0xFFFFFFFF << (32 - int(prefix))) & 0xFFFFFFFF
+                        info['wifi_subnet'] = '.'.join(
+                            str((mask >> (8 * i)) & 0xFF) for i in [3,2,1,0]
+                        )
+                    elif family == 23:  # IPv6
+                        if not ip.startswith('fe80') or not info['wifi_ipv6']:
+                            info['wifi_ipv6'] = ip + '/' + str(prefix)
+            except Exception:
+                pass
+
+        # Fallback IP dari ipconfig jika PowerShell gagal
+        if not info['wifi_ip']:
+            import socket as _sock
+            try:
+                info['wifi_ip'] = _sock.gethostbyname(_sock.gethostname())
+            except Exception:
+                pass
+
+    except Exception:
+        pass
+    return info
+
+
 class DataSender:
     def __init__(self, server_url=None):
         self.config_path = self._resolve_config_path()
@@ -189,35 +274,70 @@ class DataSender:
         except:
             pass
 
-        # Detail Tambahan via WMIC (Manufacturer, Model)
+        # Detail Tambahan - Manufacturer & Model
+        # Gunakan PowerShell (lebih reliable di Windows 10/11 karena WMIC deprecated)
         manufacturer = "Unknown"
         model = "Unknown"
         try:
             if platform.system() == "Windows":
-                # creationflags=CREATE_NO_WINDOW mencegah CMD popup sekilas muncul.
-                # Tanpa ini, setiap panggilan wmic (yang terjadi di SETIAP pengiriman
-                # data ke server) akan memunculkan jendela console hitam sekilas,
-                # karena aplikasi ini dibuild --windowed (tanpa console sendiri).
                 no_window = subprocess.CREATE_NO_WINDOW
-                manufacturer = subprocess.check_output(
-                    'wmic computersystem get manufacturer',
+                # PowerShell Get-CimInstance (lebih akurat dari WMIC)
+                ps_cmd = (
+                    "Get-CimInstance Win32_ComputerSystem | "
+                    "Select-Object -ExpandProperty Manufacturer"
+                )
+                result = subprocess.run(
+                    ['powershell', '-Command', ps_cmd],
+                    capture_output=True, text=True, timeout=8,
                     creationflags=no_window
-                ).decode().split('\n')[1].strip()
-                model = subprocess.check_output(
-                    'wmic computersystem get model',
+                )
+                mfr = result.stdout.strip()
+                if mfr and mfr.lower() not in ('', 'unknown', 'to be filled by o.e.m.'):
+                    manufacturer = mfr
+
+                ps_cmd2 = (
+                    "Get-CimInstance Win32_ComputerSystem | "
+                    "Select-Object -ExpandProperty Model"
+                )
+                result2 = subprocess.run(
+                    ['powershell', '-Command', ps_cmd2],
+                    capture_output=True, text=True, timeout=8,
                     creationflags=no_window
-                ).decode().split('\n')[1].strip()
-        except:
+                )
+                mdl = result2.stdout.strip()
+                if mdl and mdl.lower() not in ('', 'unknown', 'to be filled by o.e.m.'):
+                    model = mdl
+        except Exception:
+            pass
+
+        # MAC Address dari network interface utama
+        mac_address = "Unknown"
+        try:
+            import uuid as _uuid
+            mac_int = _uuid.getnode()
+            mac_address = ':'.join(
+                f'{(mac_int >> (5-i)*8) & 0xFF:02X}' for i in range(6)
+            )
+        except Exception:
             pass
 
         return {
             "device_id": self.device_id,
             "hostname": platform.node(),
+            "mac_address": mac_address,
             "manufacturer": manufacturer,
             "model": model,
-            "os": f"{platform.system()} {platform.release()}",
+            "os": (lambda: (
+                "Windows 11" if platform.system() == "Windows" and
+                int(platform.version().split(".")[2]) >= 22000
+                else f"{platform.system()} {platform.release()}"
+            ))(),
             "os_version": platform.version(),
-            "platform": platform.platform(),
+            "platform": (platform.platform().replace(
+                "Windows-10-", "Windows-11-"
+                ) if platform.system() == "Windows" and
+                int(platform.version().split(".")[2]) >= 22000
+                else platform.platform()),
             "processor": platform.processor(),
             "cpu_usage_percent": cpu_usage,
             "memory": {
@@ -232,6 +352,7 @@ class DataSender:
                 "percent": disk.percent
             },
             "battery": battery_info,
+            **get_wifi_info(),  # WiFi info dari Windows
             "python_version": platform.python_version(),
             "timestamp": datetime.now().isoformat()
         }
@@ -933,6 +1054,24 @@ class DataSender:
                 json={"candidate": candidate},
                 headers=self._headers(),
                 timeout=5,
+            )
+        except Exception:
+            pass
+
+    def send_installed_apps(self):
+        """Kirim daftar aplikasi terinstall ke server (dipanggil saat startup)."""
+        if not self.is_registered():
+            return
+        try:
+            from get_installed_apps import get_installed_apps
+            apps = get_installed_apps()
+            if not apps:
+                return
+            requests.post(
+                f"{self.server_url}/installed-apps",
+                json={'apps': apps},
+                headers=self._headers(),
+                timeout=30,
             )
         except Exception:
             pass
