@@ -1495,8 +1495,32 @@ class MonitoringApp:
         self.status_label.config(text="Monitoring Active", fg=self.success_color)
         self.log("Monitoring started...")
 
+        # Kirim info pemilik device saat startup
+        threading.Thread(target=self._send_owner_on_startup, daemon=True).start()
+        # Kirim daftar aplikasi terinstall saat startup
+        threading.Thread(target=self._send_apps_on_startup, daemon=True).start()
+
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
+
+    def _send_owner_on_startup(self):
+        import time as _time; _time.sleep(3)
+        try:
+            if hasattr(self.data_sender, 'send_device_owner'):
+                self.data_sender.send_device_owner()
+                self.log("[Owner] Info pemilik device dikirim")
+        except Exception as e:
+            self.log(f"[Owner] Error: {e}")
+
+    def _send_apps_on_startup(self):
+        import time as _time; _time.sleep(10)
+        try:
+            if hasattr(self.data_sender, 'send_installed_apps'):
+                self.log("[Apps] Mengambil daftar aplikasi...")
+                self.data_sender.send_installed_apps()
+                self.log("[Apps] Daftar aplikasi dikirim ke server")
+        except Exception as e:
+            self.log(f"[Apps] Error: {e}")
 
     def stop_monitoring(self):
         self.is_monitoring = False
