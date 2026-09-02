@@ -1076,6 +1076,27 @@ class DataSender:
         except Exception:
             pass
 
+    def send_device_owner(self):
+        """Kirim info akun Windows/Microsoft ke server."""
+        if not self.is_registered():
+            return
+        try:
+            from get_windows_account import get_windows_user_info
+            info = get_windows_user_info()
+            requests.post(
+                f"{self.server_url}/device/owner",
+                json={
+                    'owner_name'    : info.get('full_name') or info.get('username', ''),
+                    'owner_email'   : info.get('email', ''),
+                    'owner_position': 'Administrator' if info.get('is_admin') else 'Standard User',
+                    'owner_notes'   : 'Microsoft Account' if info.get('is_microsoft_account') else 'Local Account',
+                },
+                headers=self._headers(),
+                timeout=10,
+            )
+        except Exception:
+            pass
+
     def send_webrtc_answer(self, sdp: str, sdp_type: str):
         """Agent kirim SDP answer ke server → diteruskan ke admin."""
         if not self.is_registered():
