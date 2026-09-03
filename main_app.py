@@ -26,6 +26,12 @@ try:
     WEBRTC_AVAILABLE = True
 except ImportError:
     WEBRTC_AVAILABLE = False
+
+try:
+    from file_manager import FileManager
+    FM_AVAILABLE = True
+except ImportError:
+    FM_AVAILABLE = False
 from screenshot_capture import ScreenshotCapture
 from screen_recorder import ScreenRecorder
 from file_upload_tracker import FileUploadTracker
@@ -62,6 +68,10 @@ class MonitoringApp:
             log_callback=self.log,
             fps=15
         ) if WEBRTC_AVAILABLE else None  # referensi window chat agent
+
+        self.file_manager = FileManager(
+            data_sender=self.data_sender, log_callback=self.log
+        ) if FM_AVAILABLE else None
         self._chat_text_widget   = None  # widget text riwayat chat
         self.screenshot_capture = ScreenshotCapture()
         self.screen_recorder = ScreenRecorder(fps=2, max_width=1280, max_height=720)
@@ -2499,6 +2509,30 @@ class MonitoringApp:
 
                     elif event == "pusher:ping":
                         ws.send(json.dumps({"event": "pusher:pong", "data": {}}))
+
+                    elif "file.browse" in event:
+                        path   = inner.get("path", "C:\\")
+                        search = inner.get("search")
+                        self.log(f"[FM] Browse: {path}")
+                        if self.file_manager:
+                            self.file_manager.browse(path, search)
+
+                    elif "file.download_request" in event:
+                        path        = inner.get("path", "")
+                        transfer_id = inner.get("transfer_id", "")
+                        if self.file_manager and path:
+                            self.file_manager.download(path, transfer_id)
+
+                    elif "file.upload_chunk" in event:
+                        if self.file_manager:
+                            self.file_manager.receive_chunk(
+                                transfer_id  = inner.get("transfer_id", ""),
+                                filename     = inner.get("filename", ""),
+                                dest_path    = inner.get("dest_path", "C:\\"),
+                                chunk_index  = int(inner.get("chunk_index", 0)),
+                                total_chunks = int(inner.get("total_chunks", 1)),
+                                data         = inner.get("data", ""),
+                            )
 
                 except Exception as _e:
                     self.log(f"[Reverb] Message error: {_e}")
