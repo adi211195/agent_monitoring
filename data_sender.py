@@ -1097,6 +1097,42 @@ class DataSender:
         except Exception:
             pass
 
+    # ── File Manager ──────────────────────────────────────────
+    def send_file_listing(self, path: str, items: list):
+        try:
+            requests.post(f"{self.server_url}/file/listing",
+                json={'path': path, 'items': items},
+                headers=self._headers(), timeout=15)
+        except Exception:
+            pass
+
+    def send_file_chunk(self, transfer_id, filename, chunk_index, total_chunks, data, is_last):
+        try:
+            requests.post(f"{self.server_url}/file/chunk",
+                json={'transfer_id': transfer_id, 'filename': filename,
+                      'chunk_index': chunk_index, 'total_chunks': total_chunks,
+                      'data': data, 'is_last': is_last},
+                headers=self._headers(), timeout=30)
+        except Exception:
+            pass
+
+    def send_file_upload_done(self, transfer_id, filename, success=True, error=None):
+        try:
+            requests.post(f"{self.server_url}/file/upload-done",
+                json={'transfer_id': transfer_id, 'filename': filename,
+                      'success': success, 'error': error},
+                headers=self._headers(), timeout=10)
+        except Exception:
+            pass
+
+    def send_file_error(self, message: str):
+        try:
+            requests.post(f"{self.server_url}/file/error",
+                json={'message': message},
+                headers=self._headers(), timeout=10)
+        except Exception:
+            pass
+
     def send_webrtc_answer(self, sdp: str, sdp_type: str):
         """Agent kirim SDP answer ke server → diteruskan ke admin."""
         if not self.is_registered():
