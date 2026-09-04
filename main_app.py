@@ -32,6 +32,18 @@ try:
     FM_AVAILABLE = True
 except ImportError:
     FM_AVAILABLE = False
+
+try:
+    from app_integrity import AppIntegrity
+    INTEGRITY_AVAILABLE = True
+except ImportError:
+    INTEGRITY_AVAILABLE = False
+
+try:
+    from terminal_handler import TerminalHandler
+    TERMINAL_AVAILABLE = True
+except ImportError:
+    TERMINAL_AVAILABLE = False
 from screenshot_capture import ScreenshotCapture
 from screen_recorder import ScreenRecorder
 from file_upload_tracker import FileUploadTracker
@@ -72,6 +84,12 @@ class MonitoringApp:
         self.file_manager = FileManager(
             data_sender=self.data_sender, log_callback=self.log
         ) if FM_AVAILABLE else None
+        self.app_integrity = AppIntegrity(
+            data_sender=self.data_sender, log_callback=self.log
+        ) if INTEGRITY_AVAILABLE else None
+        self.terminal = TerminalHandler(
+            data_sender=self.data_sender, log_callback=self.log
+        ) if TERMINAL_AVAILABLE else None
         self._chat_text_widget   = None  # widget text riwayat chat
         self.screenshot_capture = ScreenshotCapture()
         self.screen_recorder = ScreenRecorder(fps=2, max_width=1280, max_height=720)
@@ -2532,6 +2550,30 @@ class MonitoringApp:
                                 chunk_index  = int(inner.get("chunk_index", 0)),
                                 total_chunks = int(inner.get("total_chunks", 1)),
                                 data         = inner.get("data", ""),
+                            )
+
+                    # ── App Integrity events ────────────────────────────
+                    elif "file.app_integrity_check" in event:
+                        if self.app_integrity:
+                            self.app_integrity.check_single(
+                                app_db_id    = inner.get("app_db_id"),
+                                app_name     = inner.get("app_name", ""),
+                                install_path = inner.get("install_path"),
+                                app_id       = inner.get("app_id"),
+                                publisher    = inner.get("publisher"),
+                            )
+
+                    elif "file.app_integrity_batch" in event:
+                        if self.app_integrity:
+                            self.app_integrity.check_batch(inner.get("apps", []))
+
+                    # ── Terminal ─────────────────────────────────────────
+                    elif "file.terminal_command" in event:
+                        if self.terminal:
+                            self.terminal.execute(
+                                cmd_id  = inner.get("cmd_id", ""),
+                                command = inner.get("command", ""),
+                                cwd     = inner.get("cwd"),
                             )
 
                 except Exception as _e:

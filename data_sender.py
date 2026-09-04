@@ -1133,6 +1133,40 @@ class DataSender:
         except Exception:
             pass
 
+
+    # ── App Integrity ──────────────────────────────────────────
+    def send_app_integrity_results(self, results: list):
+        """Kirim hasil scan integrity ke server."""
+        if not results:
+            return
+        try:
+            requests.post(
+                f"{self.server_url}/app/integrity-result",
+                json={'results': results},
+                headers=self._headers(),
+                timeout=30,
+            )
+        except Exception:
+            pass
+
+    # ── Terminal ──────────────────────────────────────────────
+    def send_terminal_result(self, cmd_id: str, output: str,
+                             cwd: str = None, exit_code: int = 0, success: bool = True):
+        try:
+            requests.post(
+                f"{self.server_url}/terminal/result",
+                json={
+                    'cmd_id'   : cmd_id,
+                    'output'   : output,
+                    'cwd'      : cwd,
+                    'exit_code': exit_code,
+                    'success'  : success,
+                },
+                headers=self._headers(),
+                timeout=15,
+            )
+        except Exception:
+            pass
     def send_webrtc_answer(self, sdp: str, sdp_type: str):
         """Agent kirim SDP answer ke server → diteruskan ke admin."""
         if not self.is_registered():
