@@ -89,6 +89,20 @@ _KEY_MAP = {
     "End": win32con.VK_END, "PageUp": win32con.VK_PRIOR,
     "PageDown": win32con.VK_NEXT, "CapsLock": win32con.VK_CAPITAL,
     "Meta": win32con.VK_LWIN,
+    # Function keys
+    "F1":0x70, "F2":0x71, "F3":0x72, "F4":0x73, "F5":0x74,
+    "F6":0x75, "F7":0x76, "F8":0x77, "F9":0x78, "F10":0x79,
+    "F11":0x7A, "F12":0x7B,
+    # Special
+    "Insert": win32con.VK_INSERT, "PrintScreen": win32con.VK_SNAPSHOT,
+    "NumLock": win32con.VK_NUMLOCK, "ScrollLock": win32con.VK_SCROLL,
+    "Pause": win32con.VK_PAUSE,
+    # Numpad
+    "Numpad0":0x60,"Numpad1":0x61,"Numpad2":0x62,"Numpad3":0x63,
+    "Numpad4":0x64,"Numpad5":0x65,"Numpad6":0x66,"Numpad7":0x67,
+    "Numpad8":0x68,"Numpad9":0x69,"NumpadMultiply":0x6A,
+    "NumpadAdd":0x6B,"NumpadSubtract":0x6D,"NumpadDecimal":0x6E,
+    "NumpadDivide":0x6F, "NumpadEnter": win32con.VK_RETURN,
 }
 for _i in range(1, 13):
     _v = getattr(win32con, f"VK_F{_i}", None)
@@ -112,6 +126,9 @@ class RemoteControlAgent:
         self.log          = log_callback or (lambda m: None)
         self._active      = False
         self._stop_flag   = threading.Event()
+        # Virtual cursor position (tidak memindahkan cursor fisik Windows)
+        self._vx = 0
+        self._vy = 0
 
     def stop_watching(self):
         """Dipanggil saat logout/shutdown."""
@@ -192,72 +209,148 @@ class RemoteControlAgent:
             self._active = False
 
     def _execute_event(self, event, screen_width, screen_height):
+        """
+        Eksekusi mouse/keyboard event dari DataChannel.
+        Pakai SendInput dengan MOUSEEVENTF_ABSOLUTE untuk click yang reliable.
+        mouse_move: hanya update virtual position, tidak pindahkan cursor fisik.
+        """
         etype   = event.get("type")
         payload = event.get("payload") or {}
 
+        if etype != "mouse_move":
+            self.log(f"[REMOTE INPUT] execute: {etype}")
+
         try:
             if etype == "mouse_move":
-                x = int(float(payload.get("x", 0)) * screen_width)
-                y = int(float(payload.get("y", 0)) * screen_height)
-                win32api.SetCursorPos((x, y))
+                # Simpan posisi virtual, TIDAK pindahkan cursor fisik
+                self._vx = int(float(payload.get("x", 0)) * screen_width)
+                self._vy = int(float(payload.get("y", 0)) * screen_height)
 
-            elif etype == "mouse_down":
-                if "x" in payload and "y" in payload:
-                    x = int(float(payload["x"]) * screen_width)
-                    y = int(float(payload["y"]) * screen_height)
-                    win32api.SetCursorPos((x, y))
-                flag = win32con.MOUSEEVENTF_RIGHTDOWN if payload.get("button") == "right" \
-                       else win32con.MOUSEEVENTF_LEFTDOWN
-                win32api.mouse_event(flag, 0, 0, 0, 0)
+            elif etype in ("mouse_down", "mouse_up", "mouse_dblclick"):
+                x = int(float(payload.get("x", self._vx / max(screen_width, 1))) * screen_width)
+                y = int(float(payload.get("y", self._vy / max(screen_height, 1))) * screen_height)
+                self._vx, self._vy = x, y
+                btn = payload.get("button", "left")
 
-            elif etype == "mouse_up":
-                if "x" in payload and "y" in payload:
-                    x = int(float(payload["x"]) * screen_width)
-                    y = int(float(payload["y"]) * screen_height)
-                    win32api.SetCursorPos((x, y))
-                flag = win32con.MOUSEEVENTF_RIGHTUP if payload.get("button") == "right" \
-                       else win32con.MOUSEEVENTF_LEFTUP
-                win32api.mouse_event(flag, 0, 0, 0, 0)
+                if etype == "mouse_down":
+                    self._send_mouse_input(x, y, screen_width, screen_height, btn, down=True)
+                elif etype == "mouse_up":
+                    self._send_mouse_input(x, y, screen_width, screen_height, btn, down=False)
+                elif etype == "mouse_dblclick":
+                    # Double click: down-up-down-up di posisi sama
+                    self._send_mouse_input(x, y, screen_width, screen_height, "left", down=True)
+                    self._send_mouse_input(x, y, screen_width, screen_height, "left", down=False)
+                    import time as _t; _t.sleep(0.05)
+                    self._send_mouse_input(x, y, screen_width, screen_height, "left", down=True)
+                    self._send_mouse_input(x, y, screen_width, screen_height, "left", down=False)
 
             elif etype == "mouse_scroll":
                 delta = 120 if payload.get("delta", 0) > 0 else -120
+                # Scroll di virtual position
+                _saved = win32api.GetCursorPos()
+                win32api.SetCursorPos((self._vx, self._vy))
                 win32api.mouse_event(win32con.MOUSEEVENTF_WHEEL, 0, 0, delta, 0)
+                win32api.SetCursorPos(_saved)
 
             elif etype in ("key_down", "key_up"):
-                vk = _key_to_vk(payload.get("key", ""))
+                key     = payload.get("key", "")
+                is_down = (etype == "key_down")
+                flag    = 0 if is_down else win32con.KEYEVENTF_KEYUP
+
+                # Press modifiers first (on keydown)
+                if is_down:
+                    if payload.get("ctrl")  and key != "Control":
+                        win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
+                    if payload.get("alt")   and key != "Alt":
+                        win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
+                    if payload.get("shift") and key != "Shift":
+                        win32api.keybd_event(win32con.VK_SHIFT, 0, 0, 0)
+                    if payload.get("meta")  and key != "Meta":
+                        win32api.keybd_event(win32con.VK_LWIN, 0, 0, 0)
+
+                vk = _key_to_vk(key)
                 if vk:
-                    flag = 0 if etype == "key_down" else win32con.KEYEVENTF_KEYUP
                     win32api.keybd_event(vk, 0, flag, 0)
+
+                # Release modifiers after keyup
+                if not is_down:
+                    if payload.get("ctrl")  and key != "Control":
+                        win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
+                    if payload.get("alt")   and key != "Alt":
+                        win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
+                    if payload.get("shift") and key != "Shift":
+                        win32api.keybd_event(win32con.VK_SHIFT, 0, win32con.KEYEVENTF_KEYUP, 0)
+                    if payload.get("meta")  and key != "Meta":
+                        win32api.keybd_event(win32con.VK_LWIN, 0, win32con.KEYEVENTF_KEYUP, 0)
 
             elif etype == "terminate_app":
                 app_name = (payload.get("app_name") or "").strip()
                 if app_name:
-                    killed = []
                     try:
                         import psutil as _ps
                         for p in _ps.process_iter(["name", "pid"]):
                             try:
                                 if p.info["name"].lower() == app_name.lower():
                                     p.kill()
-                                    killed.append(p.info["pid"])
-                            except (_ps.NoSuchProcess, _ps.AccessDenied):
+                            except Exception:
                                 pass
                     except Exception:
-                        pass
-
-                    if not killed:
-                        # Fallback: pakai taskkill (lebih kuat, bisa terminate proses sistem)
-                        try:
-                            subprocess.run(
-                                ["taskkill", "/F", "/IM", app_name],
-                                creationflags=subprocess.CREATE_NO_WINDOW,
-                                timeout=5
-                            )
-                            killed = ["via taskkill"]
-                        except Exception:
-                            pass
-
-                    self.log(f"Terminate '{app_name}': {killed or 'tidak ditemukan'}")
+                        subprocess.run(
+                            ["taskkill", "/F", "/IM", app_name],
+                            creationflags=subprocess.CREATE_NO_WINDOW, timeout=5
+                        )
 
         except Exception as e:
-            self.log(f"Event error ({etype}): {e}")
+            self.log(f"[REMOTE INPUT] Event error ({etype}): {e}")
+
+    def _send_mouse_input(self, x: int, y: int,
+                          screen_width: int, screen_height: int,
+                          button: str, down: bool):
+        """
+        Kirim klik mouse menggunakan SendInput dengan koordinat absolut.
+        Lebih reliable dari mouse_event karena atomik dan tidak ada race condition.
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        class _MOUSEINPUT(ctypes.Structure):
+            _fields_ = [
+                ("dx",          ctypes.c_long),
+                ("dy",          ctypes.c_long),
+                ("mouseData",   wintypes.DWORD),
+                ("dwFlags",     wintypes.DWORD),
+                ("time",        wintypes.DWORD),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+            ]
+
+        class _INPUT(ctypes.Structure):
+            class _UNION(ctypes.Union):
+                _fields_ = [("mi", _MOUSEINPUT)]
+            _anonymous_ = ("_u",)
+            _fields_ = [("type", wintypes.DWORD), ("_u", _UNION)]
+
+        # Normalize ke 0-65535 (range SendInput absolute)
+        nx = int(x * 65535 / max(screen_width  - 1, 1))
+        ny = int(y * 65535 / max(screen_height - 1, 1))
+
+        # Tentukan flag
+        MOVE = 0x0001   # MOUSEEVENTF_MOVE
+        ABS  = 0x8000   # MOUSEEVENTF_ABSOLUTE
+
+        if button == "right":
+            act = 0x0008 if down else 0x0010  # RIGHTDOWN / RIGHTUP
+        elif button == "middle":
+            act = 0x0020 if down else 0x0040  # MIDDLEDOWN / MIDDLEUP
+        else:
+            act = 0x0002 if down   else 0x0004  # LEFTDOWN / LEFTUP
+
+        mi  = _MOUSEINPUT(dx=nx, dy=ny, mouseData=0,
+                          dwFlags=MOVE | ABS | act,
+                          time=0, dwExtraInfo=None)
+        inp = _INPUT(type=0)  # INPUT_MOUSE = 0
+        inp.mi = mi
+
+        result = ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+        if result != 1:
+            self.log(f"[REMOTE INPUT] SendInput failed: {ctypes.GetLastError()}")
+

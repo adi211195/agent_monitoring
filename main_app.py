@@ -80,6 +80,9 @@ class MonitoringApp:
             log_callback=self.log,
             fps=15
         ) if WEBRTC_AVAILABLE else None  # referensi window chat agent
+        # Hubungkan WebRTC DataChannel ke RemoteControlAgent
+        if self.webrtc and hasattr(self.webrtc, 'set_remote_ctrl'):
+            self.webrtc.set_remote_ctrl(self.remote_control)
 
         self.file_manager = FileManager(
             data_sender=self.data_sender, log_callback=self.log
