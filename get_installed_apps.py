@@ -36,6 +36,8 @@ foreach ($path in $paths) {
                 version      = $_.DisplayVersion
                 app_id       = $_.PSChildName
                 last_updated = $_.InstallDate
+                install_path = $_.InstallLocation
+                publisher    = $_.Publisher
                 source       = 'registry'
             }
         }
@@ -70,6 +72,8 @@ $result | ConvertTo-Json -Depth 2
                     'app_id'      : (item.get('app_id') or '').strip() or None,
                     'status'      : 'Installed',
                     'last_updated': parsed_date,
+                    'install_path': (item.get('install_path') or '').strip() or None,
+                    'publisher'   : (item.get('publisher') or '').strip() or None,
                 })
     except Exception:
         pass
@@ -77,7 +81,7 @@ $result | ConvertTo-Json -Depth 2
     # ── 2. Windows Store / AppX apps ────────────────────────────
     try:
         ps_appx = """
-Get-AppxPackage | Select-Object Name,Version,PackageFullName,InstallLocation |
+Get-AppxPackage | Select-Object Name,Version,PackageFullName,InstallLocation,Publisher |
 ConvertTo-Json -Depth 1
 """
         r2 = subprocess.run(
@@ -100,6 +104,8 @@ ConvertTo-Json -Depth 1
                     'app_id'      : (item.get('PackageFullName') or '').strip() or None,
                     'status'      : 'Installed',
                     'last_updated': None,
+                    'install_path': (item.get('InstallLocation') or '').strip() or None,
+                    'publisher'   : (item.get('Publisher') or '').strip() or None,
                 })
     except Exception:
         pass
