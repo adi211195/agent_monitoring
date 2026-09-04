@@ -105,6 +105,11 @@ class WebRtcStreamer:
         self._loop    = None
         self._thread  = None
         self._running = False
+        self._remote_ctrl = None
+
+    def set_remote_ctrl(self, agent):
+        """Set RemoteControlAgent instance untuk handle input events."""
+        self._remote_ctrl = agent
 
     def is_available(self) -> bool:
         return AIORTC_AVAILABLE
@@ -203,6 +208,39 @@ class WebRtcStreamer:
             @self._pc.on("connectionstatechange")
             async def on_state():
                 self._log(f"[WebRTC] Connection state: {self._pc.connectionState}")
+
+            # ── DataChannel: terima input events dari browser admin ──
+            @self._pc.on("datachannel")
+            def on_datachannel(channel):
+                self._log(f"[REMOTE INPUT] DataChannel open: {channel.label}")
+
+                @channel.on("message")
+                def on_message(message):
+                    try:
+                        import json as _json
+                        event = _json.loads(message)
+                        etype = event.get("type", "unknown")
+                        # Log untuk debug (kecuali mousemove yang terlalu banyak)
+                        if etype != "mouse_move":
+                            self._log(f"[REMOTE INPUT] {etype} received")
+                        # Dapatkan screen size
+                        try:
+                            import win32api as _w32
+                            sw = _w32.GetSystemMetrics(0)
+                            sh = _w32.GetSystemMetrics(1)
+                        except Exception:
+                            sw, sh = 1920, 1080
+                        # Delegate ke RemoteControlAgent
+                        if self._remote_ctrl:
+                            self._remote_ctrl._execute_event(event, sw, sh)
+                        else:
+                            self._log("[REMOTE INPUT] WARNING: remote_ctrl not set!")
+                    except Exception as _e:
+                        self._log(f"[REMOTE INPUT] msg error: {_e}")
+
+                @channel.on("close")
+                def on_close():
+                    self._log("[REMOTE INPUT] DataChannel closed")
 
             # Set browser offer
             offer = RTCSessionDescription(sdp=offer_sdp, type=offer_type)
