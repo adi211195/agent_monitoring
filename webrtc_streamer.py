@@ -212,7 +212,7 @@ class WebRtcStreamer:
             # ── DataChannel: terima input events dari browser admin ──
             @self._pc.on("datachannel")
             def on_datachannel(channel):
-                self._log(f"[REMOTE INPUT] DataChannel open: {channel.label}")
+                self._log(f"[REMOTE INPUT] DataChannel received: '{channel.label}' — remote_ctrl={self._remote_ctrl is not None}")
 
                 @channel.on("message")
                 def on_message(message):
