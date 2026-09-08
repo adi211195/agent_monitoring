@@ -6,3 +6,8 @@ installer_output/
 dist/
 build/
 installer_output/
+
+__pycache__/
+build/
+dist/
+installer_output/

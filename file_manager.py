@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 logger   = logging.getLogger(__name__)
-CHUNK_SZ = 32 * 1024
+CHUNK_SZ = 32766  # HARUS kelipatan 3: base64 intermediate chunks tidak punya padding '='
 MAX_FILE = 512 * 1024 * 1024
 
 SKIP_DIRS = {
@@ -192,6 +192,17 @@ class FileManager:
     # ── Upload ────────────────────────────────────────────────────
     def receive_chunk(self, transfer_id, filename, dest_path,
                       chunk_index, total_chunks, data):
+        # Validasi dest_path di chunk pertama (chunk_index == 0)
+        if int(chunk_index) == 0:
+            dest_dir = Path(dest_path) if dest_path and dest_path != 'root' else None
+            if dest_dir is None or not dest_dir.is_dir():
+                err = f"Direktori tujuan tidak valid atau tidak ditemukan: '{dest_path}'"
+                self._log(f"[FM] Upload FAILED: {err}")
+                self._ds.send_file_upload_done(
+                    transfer_id=transfer_id, filename=filename,
+                    success=False, error=err)
+                return
+
         if transfer_id not in self._uploads:
             self._uploads[transfer_id] = {
                 'chunks': {}, 'total': total_chunks,
