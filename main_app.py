@@ -2442,9 +2442,21 @@ class MonitoringApp:
                 self.log("[Reverb] Gagal ambil config, pakai HTTP polling saja")
                 return
 
-            host       = cfg.get("host", "127.0.0.1")
-            port       = cfg.get("port", 8080)
-            app_key    = cfg.get("app_key", "")
+            host    = cfg.get("host", "127.0.0.1")
+            port    = cfg.get("port", 8080)
+            app_key = cfg.get("app_key", "")
+
+            # Fallback: jika server mengembalikan localhost/127.0.0.1,
+            # gunakan host dari server_url yang sudah dikonfigurasi user
+            if host in ("localhost", "127.0.0.1"):
+                try:
+                    import urllib.parse as _up
+                    _parsed = _up.urlparse(self.data_sender.server_url or "")
+                    if _parsed.hostname and _parsed.hostname not in ("localhost", "127.0.0.1"):
+                        self.log(f"[Reverb] Host fallback: {host} → {_parsed.hostname} (dari server_url)")
+                        host = _parsed.hostname
+                except Exception:
+                    pass
             device_id  = cfg.get("device_id")
             channel    = f"private-device.{device_id}"
             ws_url     = f"ws://{host}:{port}/app/{app_key}?protocol=7&client=python&version=1.0"
@@ -2453,7 +2465,7 @@ class MonitoringApp:
             subscribed        = [False]
 
             def on_open(ws):
-                self.log("[Reverb] WebSocket connected")
+                self.log(f"[Reverb] Connection successful — {ws_url}")
 
             def on_message(ws, raw):
                 try:
@@ -2596,6 +2608,8 @@ class MonitoringApp:
             import time
             while True:
                 try:
+                    self.log(f"[Reverb] Connecting to: {ws_url}")
+                    self.log(f"[Reverb] Connecting to: {ws_url}")
                     ws_app = websocket.WebSocketApp(
                         ws_url,
                         on_open    = on_open,
@@ -2612,14 +2626,18 @@ class MonitoringApp:
         self.log("[Reverb] WebSocket listener started")
 
 
+# Global: simpan mutex handle agar tidak di-garbage collect Python.
+# Kalau handle ini hilang, mutex dilepas dan instance kedua bisa jalan.
+_SINGLE_INSTANCE_MUTEX_HANDLE = None
+
+
 def _ensure_single_instance():
     """
-    Cegah 2 proses MonitoringApp berjalan bersamaan (bisa terjadi kalau
-    startup task, watchdog task, dan user buka manual kebetulan hampir
-    bersamaan). Kalau sudah ada instance lain berjalan, keluar diam-diam.
-
-    Pakai named mutex Windows lewat pywin32 (sudah jadi dependency project).
+    Cegah 2 proses MonitoringApp berjalan bersamaan.
+    PENTING: handle mutex disimpan di global agar tidak di-GC Python.
+    Kalau handle local variable → Python GC → mutex dilepas → double instance.
     """
+    global _SINGLE_INSTANCE_MUTEX_HANDLE
     try:
         import win32event
         import win32api
@@ -2632,10 +2650,10 @@ def _ensure_single_instance():
         if last_error == winerror.ERROR_ALREADY_EXISTS:
             return False  # sudah ada instance lain jalan
 
+        # Simpan ke global agar tidak di-garbage collect!
+        _SINGLE_INSTANCE_MUTEX_HANDLE = handle
         return True
     except Exception:
-        # Kalau gagal cek (misal pywin32 bermasalah), tetap lanjut jalan
-        # daripada aplikasi tidak jalan sama sekali.
         return True
 
 
