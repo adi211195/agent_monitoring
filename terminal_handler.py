@@ -10,10 +10,13 @@ import time
 
 logger = logging.getLogger(__name__)
 
-# Commands that should never execute regardless
+# Hanya blokir command yang destruktif dan tidak bisa di-undo
+# Windows shell (cmd/PowerShell) menangani permission sendiri via UAC
 BLOCKED_PATTERNS = [
-    'format c:', 'del /f /s /q c:\\', 'rmdir /s /q c:\\',
-    'rm -rf /', ':(){:|:&};:',
+    'format c:',
+    'del /f /s /q c:\\',
+    'rmdir /s /q c:\\',
+    ':(){:|:&};:',
 ]
 
 TIMEOUT_SECONDS = 30
