@@ -334,79 +334,104 @@ class MonitoringApp:
 
     def _apply_hide_page_policy(self, enabled: bool, pages: list):
         """
-        Terapkan Windows Settings Page Visibility via HKLM registry.
-        Format SettingsPageVisibility: hide:ms-settings:x;ms-settings:y
-
-        - Items dengan identifier "unsupported:*" di-skip dengan log warning
-        - Agent berjalan sebagai SYSTEM/Admin untuk akses HKLM
-        - Menu utama (System, Personalization, dll) TIDAK di-hide - hanya sub-pages
+        Terapkan Windows Settings Page Visibility.
+        Strategi:
+          1. HKCU via PowerShell -Force  (tidak butuh admin)
+          2. HKLM via PowerShell -Force  (butuh admin/SYSTEM)
         """
-        import winreg
-        REG_PATH = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+        import subprocess
+        NO_WIN   = 0x08000000
         VAL_NAME = "SettingsPageVisibility"
+
+        def _write_reg(hive, value):
+            ps_hive = "HKCU:" if hive == "HKCU" else "HKLM:"
+            subkey  = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+            ps_path = ps_hive + "\\" + subkey
+            ps = (
+                '$p = "' + ps_path + '"; '
+                'if(!(Test-Path $p)){New-Item -Path $p -Force | Out-Null}; '
+                'Set-ItemProperty -Path $p -Name "' + VAL_NAME + '" '
+                '-Value "' + value + '" -Type String -Force'
+            )
+            r = subprocess.run(
+                ["powershell", "-NonInteractive", "-NoProfile", "-Command", ps],
+                capture_output=True, text=True, creationflags=NO_WIN
+            )
+            return r.returncode == 0, r.stderr.strip()
+
+        def _delete_reg(hive):
+            ps_hive = "HKCU:" if hive == "HKCU" else "HKLM:"
+            subkey  = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+            ps_path = ps_hive + "\\" + subkey
+            ps = (
+                '$p = "' + ps_path + '"; '
+                'if(Test-Path $p){'
+                'Remove-ItemProperty -Path $p -Name "' + VAL_NAME + '" -ErrorAction SilentlyContinue}'
+            )
+            r = subprocess.run(
+                ["powershell", "-NonInteractive", "-NoProfile", "-Command", ps],
+                capture_output=True, text=True, creationflags=NO_WIN
+            )
+            return r.returncode == 0
 
         try:
             if enabled and pages:
-                self.log("[HidePage] Policy received")
+                self.log(f"[HidePage] Policy received")
                 self.log(f"[HidePage] Processing {len(pages)} page(s)")
 
-                # Filter: hanya yang memiliki ms-settings: URI yang valid
                 valid_uris = []
                 for p in pages:
                     identifier = p.get("page_identifier") or p.get("settings_uri", "")
                     name       = p.get("name", p.get("slug", "?"))
-
                     if identifier.startswith("unsupported:"):
-                        self.log(f"[HidePage] SKIP (unsupported): {name} [{identifier}]")
+                        self.log(f"[HidePage] SKIP (unsupported): {name}")
                         continue
-
                     if not identifier.startswith("ms-settings:"):
-                        self.log(f"[HidePage] SKIP (invalid identifier): {name} [{identifier}]")
+                        self.log(f"[HidePage] SKIP (invalid): {name}")
                         continue
-
                     self.log(f"[HidePage] Page: {name} | Identifier: {identifier} | Status: Supported")
                     valid_uris.append(identifier)
 
                 if not valid_uris:
-                    self.log("[HidePage] No supported identifiers — SettingsPageVisibility not applied")
+                    self.log("[HidePage] No supported identifiers — skipping")
                     return
 
-                # Strip prefix ms-settings: — Windows baca nama page saja
-                # Benar : hide:personalization-start;taskbar;privacy-webcam
-                # Salah : hide:ms-settings:personalization-start;ms-settings:taskbar
                 page_names = [uri.replace("ms-settings:", "") for uri in valid_uris]
-                visibility = "hide:" + ";".join(page_names)
+                visibility  = "hide:" + ";".join(page_names)
+                names_str   = ", ".join(
+                    p.get("name","?") for p in pages
+                    if (p.get("page_identifier") or "").startswith("ms-settings:")
+                )
+                self.log(f"[HidePage] Selected pages: {names_str}")
+                self.log(f"[HidePage] Applying: {visibility}")
 
-                self.log(f"[HidePage] Selected pages: {', '.join(p.get('name','?') for p in pages if (p.get('page_identifier') or '').startswith('ms-settings:'))}")
-                self.log(f"[HidePage] Applying SettingsPageVisibility: {visibility}")
+                # 1. Coba HKCU (tidak butuh admin)
+                ok, err = _write_reg("HKCU", visibility)
+                if ok:
+                    self.log("[HidePage] Applied via HKCU (no admin required)")
+                    self.log("[HidePage] Hide Page applied successfully")
+                    return
 
-                try:
-                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, REG_PATH, 0, winreg.KEY_SET_VALUE)
-                except FileNotFoundError:
-                    key = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, REG_PATH)
+                self.log(f"[HidePage] HKCU failed: {err} — trying HKLM (needs admin)")
 
-                winreg.SetValueEx(key, VAL_NAME, 0, winreg.REG_SZ, visibility)
-                winreg.CloseKey(key)
-                self.log("[HidePage] Registry updated successfully")
-                self.log("[HidePage] Hide Page applied successfully")
+                # 2. Fallback HKLM (butuh admin/SYSTEM)
+                ok2, err2 = _write_reg("HKLM", visibility)
+                if ok2:
+                    self.log("[HidePage] Applied via HKLM (admin/SYSTEM)")
+                    self.log("[HidePage] Hide Page applied successfully")
+                else:
+                    self.log(f"[HidePage] HKLM also failed: {err2}")
+                    self.log("[HidePage] Run agent as Administrator for Hide Page to work")
 
             else:
-                # Policy disabled - hapus restriction
                 self.log("[HidePage] Policy disabled - removing SettingsPageVisibility")
-                try:
-                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, REG_PATH, 0, winreg.KEY_SET_VALUE)
-                    try:
-                        winreg.DeleteValue(key, VAL_NAME)
-                        self.log("[HidePage] SettingsPageVisibility removed - pages restored")
-                    except FileNotFoundError:
-                        pass
-                    winreg.CloseKey(key)
-                except FileNotFoundError:
-                    pass
+                ok1 = _delete_reg("HKCU")
+                ok2 = _delete_reg("HKLM")
+                if ok1 or ok2:
+                    self.log("[HidePage] SettingsPageVisibility removed - pages restored")
+                else:
+                    self.log("[HidePage] SettingsPageVisibility not found (already clean)")
 
-        except PermissionError as e:
-            self.log(f"[HidePage] Failed: Access denied - {e}")
-            self.log("[HidePage] Ensure agent runs as SYSTEM or Administrator")
         except Exception as e:
             self.log(f"[HidePage] Failed: {e}")
 
@@ -1535,8 +1560,10 @@ class MonitoringApp:
             ("url_filter", "URL Filter"),
             ("usb_blocker", "USB Blocker"),
             ("block_new_install", "Block New Install"),
-            ("download_filter", "Download Filter")
+            ("download_filter", "Download Filter"),
+            ("hide_page", "Hide Page")
         ]
+
 
         # 2 columns
         row, col = 0, 0
