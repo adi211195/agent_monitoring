@@ -898,8 +898,69 @@ class MonitoringApp:
                 return
 
             if self.enabled_features.get("app_blocker") and self.blocked_apps:
-                if app_name in self.blocked_apps or info.get("executable", "").lower() in self.blocked_apps:
-                    self._terminate_process(pid, f"Blocked App: {app_name}")
+                # ── Ambil exe path ─────────────────────────────────────────
+                _exe = (info.get("executable","") or "").strip()
+                if not _exe and pid:
+                    try:
+                        _exe = psutil.Process(pid).exe() or ""
+                    except Exception:
+                        pass
+
+                # ── Baca ProductName via PowerShell (bypass-proof) ─────────
+                _pname = ""
+                _oname = ""
+                if _exe:
+                    try:
+                        import subprocess as _sp2
+                        _r = _sp2.run(
+                            ["powershell","-NonInteractive","-NoProfile","-Command",
+                             f'$v=(Get-ItemProperty "{_exe}").VersionInfo;'
+                             f'Write-Output ($v.ProductName + "|" + $v.OriginalFilename)'],
+                            capture_output=True, text=True, timeout=3,
+                            creationflags=0x08000000
+                        )
+                        if _r.returncode == 0 and "|" in (_r.stdout or ""):
+                            _pts   = _r.stdout.strip().split("|", 1)
+                            _pname = (_pts[0] or "").strip().lower()
+                            _oname = (_pts[1] or "").strip().lower()
+                    except Exception:
+                        pass
+
+                _exe_l = _exe.lower()
+                _app_l = app_name.lower()  # app_name sudah lowercase
+                _blk   = False
+                _why   = ""
+
+                for _rule in self.blocked_apps:
+                    _rl = (_rule or "").lower().strip()
+                    _rs = _rl
+                    for _ext in (".exe",".bat",".com",".msi"):
+                        if _rs.endswith(_ext): _rs=_rs[:-len(_ext)]; break
+
+                    # Prioritas 1: ProductName (paling akurat, tidak bisa bypass rename)
+                    if _pname and len(_rl) >= 3:
+                        if _rl in _pname or (len(_rs)>=3 and _rs in _pname):
+                            _blk=True; _why=f"ProductName[{_pname}]~rule[{_rule}]"; break
+                        for _w in _pname.split():
+                            if len(_w)>=4 and _w in _rl:
+                                _blk=True; _why=f"ProductName word[{_w}]~rule[{_rule}]"; break
+                        if _blk: break
+
+                    # Prioritas 2: OriginalFilename
+                    if _oname and (_oname==_rl or _oname.replace(".exe","") == _rs):
+                        _blk=True; _why=f"OrigFilename[{_oname}]~rule[{_rule}]"; break
+
+                    # Prioritas 3: Exe name / path (case-insensitive, fallback)
+                    if _app_l == _rl:
+                        _blk=True; _why=f"ExeName[{app_name}]~rule[{_rule}]"; break
+                    if _rl and _exe_l and _rl in _exe_l:
+                        _blk=True; _why=f"ExePath~rule[{_rule}]"; break
+                    if len(_rs)>=4 and (_rs in _exe_l or _rs in _app_l):
+                        _blk=True; _why=f"Stem[{_rs}]~rule[{_rule}]"; break
+
+                if _blk:
+                    self.log(f"[AppBlocker] BLOCKED — {_why}")
+                    self._terminate_process(pid, f"AppBlocker: {_why}")
                     return
 
             if self.enabled_features.get("url_filter") and self.url_filter_mode != "off":
