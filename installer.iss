@@ -10,18 +10,15 @@
 #define MyTaskWatchdog "MonitoringAppWatchdog"
 
 [Setup]
-AppId={{A8F2E1B4-3C9D-4E7A-9B1F-6D2C8A0B5E31}}
+AppId={{A8F2E1B4-3C9D-4E7A-9B1F-6D2C8A0B5E31}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL=https://polindra.ac.id
-; Entry di Programs and Features
 AppSupportURL=https://polindra.ac.id
 AppUpdatesURL=https://polindra.ac.id
-; Icon di Programs and Features
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
-; Pastikan uninstall entry selalu dibuat
 CreateUninstallRegKey=yes
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
@@ -44,10 +41,16 @@ Source: "watchdog.vbs"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 
+[Registry]
+; Pre-create key Policies\Explorer agar agent bisa write SettingsPageVisibility
+Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"; \
+    Flags: createvalueifdoesntexist uninsdeletekeyifempty; \
+    Permissions: users-full
+
 [Run]
 ; Task 1: auto-start saat login
 Filename: "{sys}\schtasks.exe"; \
-    Parameters: "/create /tn ""{#MyTaskStartup}"" /tr ""\\""{app}\{#MyAppExeName}\\"" --silent"" /sc onlogon /rl highest /f"; \
+    Parameters: "/create /tn ""{#MyTaskStartup}"" /tr ""\""{app}\{#MyAppExeName}\"" --silent"" /sc onlogon /rl highest /f"; \
     Flags: runhidden
 
 ; Task 2: watchdog tiap 1 menit
