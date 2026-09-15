@@ -1097,6 +1097,21 @@ class DataSender:
         except Exception:
             pass
 
+    def send_windows_users(self, users_list: list):
+        """Kirim semua Windows user accounts ke server."""
+        if not self.is_registered():
+            return {"success": False, "error": "Not registered"}
+        try:
+            response = requests.post(
+                f"{self.server_url}/device/windows-users",
+                json={"users": users_list},
+                headers=self._headers(),
+                timeout=15,
+            )
+            return {"success": response.status_code == 200}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     # ── File Manager ──────────────────────────────────────────
     def send_file_listing(self, path: str, items: list):
         try:

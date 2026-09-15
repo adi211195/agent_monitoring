@@ -332,6 +332,112 @@ class MonitoringApp:
             else:
                 self._update_feature_ui(feature, enabled)
 
+    def _collect_windows_users(self) -> list:
+        """
+        Kumpulkan Windows user accounts.
+        - Skip disabled dan built-in system accounts
+        - Email diambil dari get_windows_account untuk user aktif
+        """
+        import getpass
+        users = []
+        current_user = getpass.getuser().lower()
+
+        SKIP_USERS = {
+            'defaultaccount', 'wdagutilityaccount', 'wsiaccount',
+            'wsi account', 'guest',
+        }
+
+        # Email current user via get_windows_account
+        current_email   = None
+        current_is_msft = False
+        current_is_admin = None
+        try:
+            from get_windows_account import get_windows_user_info
+            info = get_windows_user_info()
+            current_email    = info.get('email') or None
+            current_is_msft  = bool(info.get('is_microsoft_account'))
+            current_is_admin = bool(info.get('is_admin', False))
+        except Exception:
+            pass
+
+        try:
+            import win32net, win32netcon, win32security
+            UF_ACCOUNTDISABLE = 0x0002
+            resume = 0
+            while True:
+                data, total, resume = win32net.NetUserEnum(
+                    None, 2, win32netcon.FILTER_NORMAL_ACCOUNT, resume
+                )
+                for u in data:
+                    uname = u.get('name', '')
+                    if not uname:
+                        continue
+                    # Skip disabled
+                    if u.get('flags', 0) & UF_ACCOUNTDISABLE:
+                        continue
+                    # Skip system built-in
+                    if uname.lower() in SKIP_USERS:
+                        continue
+
+                    # Check admin group
+                    is_admin = False
+                    try:
+                        groups, _, _ = win32net.NetUserGetLocalGroups(None, uname, 0)
+                        is_admin = any(g.lower() in ('administrators', 'administrator') for g in groups)
+                    except Exception:
+                        is_admin = u.get('priv', 0) == win32netcon.USER_PRIV_ADMIN
+
+                    # SID
+                    sid_str = None
+                    try:
+                        sid, _, _ = win32security.LookupAccountName(None, uname)
+                        sid_str = win32security.ConvertSidToStringSid(sid)
+                    except Exception:
+                        pass
+
+                    is_current = uname.lower() == current_user
+                    email    = current_email if is_current else None
+                    acc_type = ('microsoft' if current_is_msft else 'local') if is_current else 'local'
+
+                    # Untuk current user, pakai is_admin dari get_windows_account (lebih akurat)
+                    if is_current and current_is_admin is not None:
+                        final_admin = current_is_admin
+                    else:
+                        final_admin = is_admin
+
+                    users.append({
+                        'sid'          : sid_str,
+                        'username'     : uname,
+                        'display_name' : u.get('full_name') or uname,
+                        'email'        : email,
+                        'account_type' : acc_type,
+                        'access_level' : 'administrator' if final_admin else 'standard',
+                        'is_active'    : is_current,
+                    })
+
+                if resume == 0:
+                    break
+
+        except ImportError:
+            try:
+                from get_windows_account import get_windows_user_info
+                info = get_windows_user_info()
+                users.append({
+                    'sid'          : None,
+                    'username'     : info.get('username', current_user),
+                    'display_name' : info.get('full_name') or info.get('username', current_user),
+                    'email'        : info.get('email') or None,
+                    'account_type' : 'microsoft' if info.get('is_microsoft_account') else 'local',
+                    'access_level' : 'administrator' if info.get('is_admin') else 'standard',
+                    'is_active'    : True,
+                })
+            except Exception as e:
+                self.log(f"[Owner] fallback error: {e}")
+        except Exception as e:
+            self.log(f"[Owner] collect_windows_users error: {e}")
+
+        return users
+
     def _apply_hide_page_policy(self, enabled: bool, pages: list):
         """
         Terapkan Windows Settings Page Visibility.
@@ -1652,6 +1758,15 @@ class MonitoringApp:
             if hasattr(self.data_sender, 'send_device_owner'):
                 self.data_sender.send_device_owner()
                 self.log("[Owner] Info pemilik device dikirim")
+
+            # Kirim semua Windows users (multi-user)
+            users = self._collect_windows_users()
+            if users and hasattr(self.data_sender, 'send_windows_users'):
+                result = self.data_sender.send_windows_users(users)
+                if result.get("success"):
+                    self.log(f"[Owner] {len(users)} Windows user(s) synced")
+                else:
+                    self.log(f"[Owner] Windows users sync failed: {result.get('error','')}")
         except Exception as e:
             self.log(f"[Owner] Error: {e}")
 
