@@ -131,7 +131,8 @@ class MonitoringApp:
             "url_filter": False,
             "usb_blocker": False,
             "block_new_install": False,
-            "download_filter": False
+            "download_filter": False,
+            "hide_page": False
         }
         
         self.blocked_apps = []
@@ -315,6 +316,11 @@ class MonitoringApp:
             flist = [clean_item(ext).replace(".", "").lower() for ext in df.get("list", [])]
             self.browser_download_monitor.set_config(mode, flist)
 
+        # ── Hide Page policy ──────────────────────────────────────────
+        if "hide_page" in config:
+            hp = config["hide_page"]
+            self._apply_hide_page_policy(hp.get("enabled", False), hp.get("pages", []))
+
         new_features = config.get("features", {})
         for feature in self.enabled_features.keys():
             enabled = new_features.get(feature, False)
@@ -325,6 +331,85 @@ class MonitoringApp:
                 self._toggle_feature(feature, enabled)
             else:
                 self._update_feature_ui(feature, enabled)
+
+    def _apply_hide_page_policy(self, enabled: bool, pages: list):
+        """
+        Terapkan Windows Settings Page Visibility via HKLM registry.
+        Format SettingsPageVisibility: hide:ms-settings:x;ms-settings:y
+
+        - Items dengan identifier "unsupported:*" di-skip dengan log warning
+        - Agent berjalan sebagai SYSTEM/Admin untuk akses HKLM
+        - Menu utama (System, Personalization, dll) TIDAK di-hide - hanya sub-pages
+        """
+        import winreg
+        REG_PATH = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+        VAL_NAME = "SettingsPageVisibility"
+
+        try:
+            if enabled and pages:
+                self.log("[HidePage] Policy received")
+                self.log(f"[HidePage] Processing {len(pages)} page(s)")
+
+                # Filter: hanya yang memiliki ms-settings: URI yang valid
+                valid_uris = []
+                for p in pages:
+                    identifier = p.get("page_identifier") or p.get("settings_uri", "")
+                    name       = p.get("name", p.get("slug", "?"))
+
+                    if identifier.startswith("unsupported:"):
+                        self.log(f"[HidePage] SKIP (unsupported): {name} [{identifier}]")
+                        continue
+
+                    if not identifier.startswith("ms-settings:"):
+                        self.log(f"[HidePage] SKIP (invalid identifier): {name} [{identifier}]")
+                        continue
+
+                    self.log(f"[HidePage] Page: {name} | Identifier: {identifier} | Status: Supported")
+                    valid_uris.append(identifier)
+
+                if not valid_uris:
+                    self.log("[HidePage] No supported identifiers — SettingsPageVisibility not applied")
+                    return
+
+                # Strip prefix ms-settings: — Windows baca nama page saja
+                # Benar : hide:personalization-start;taskbar;privacy-webcam
+                # Salah : hide:ms-settings:personalization-start;ms-settings:taskbar
+                page_names = [uri.replace("ms-settings:", "") for uri in valid_uris]
+                visibility = "hide:" + ";".join(page_names)
+
+                self.log(f"[HidePage] Selected pages: {', '.join(p.get('name','?') for p in pages if (p.get('page_identifier') or '').startswith('ms-settings:'))}")
+                self.log(f"[HidePage] Applying SettingsPageVisibility: {visibility}")
+
+                try:
+                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, REG_PATH, 0, winreg.KEY_SET_VALUE)
+                except FileNotFoundError:
+                    key = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, REG_PATH)
+
+                winreg.SetValueEx(key, VAL_NAME, 0, winreg.REG_SZ, visibility)
+                winreg.CloseKey(key)
+                self.log("[HidePage] Registry updated successfully")
+                self.log("[HidePage] Hide Page applied successfully")
+
+            else:
+                # Policy disabled - hapus restriction
+                self.log("[HidePage] Policy disabled - removing SettingsPageVisibility")
+                try:
+                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, REG_PATH, 0, winreg.KEY_SET_VALUE)
+                    try:
+                        winreg.DeleteValue(key, VAL_NAME)
+                        self.log("[HidePage] SettingsPageVisibility removed - pages restored")
+                    except FileNotFoundError:
+                        pass
+                    winreg.CloseKey(key)
+                except FileNotFoundError:
+                    pass
+
+        except PermissionError as e:
+            self.log(f"[HidePage] Failed: Access denied - {e}")
+            self.log("[HidePage] Ensure agent runs as SYSTEM or Administrator")
+        except Exception as e:
+            self.log(f"[HidePage] Failed: {e}")
+
 
     def _update_feature_ui(self, feature, enabled):
         if feature in self.feature_labels:
