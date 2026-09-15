@@ -2895,6 +2895,23 @@ def main():
 
     root = tk.Tk()
     app = MonitoringApp(root, start_hidden=start_hidden)
+
+    # Handle Ctrl+C agar agent bisa dihentikan dari terminal
+    import signal
+    def _on_sigint(sig, frame):
+        try:
+            app.on_closing()
+        except Exception:
+            pass
+        root.quit()
+        root.destroy()
+
+    signal.signal(signal.SIGINT, _on_sigint)
+    # Agar Tkinter meneruskan event ke Python signal handler setiap 200ms
+    def _poll_signals():
+        root.after(200, _poll_signals)
+    root.after(200, _poll_signals)
+
     root.mainloop()
 
 
