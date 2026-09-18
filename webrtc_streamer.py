@@ -294,15 +294,25 @@ class WebRtcStreamer:
                         if etype != "mouse_move":
                             self._log(f"[WebRTC Input] {etype}")
 
-                        # Ambil ukuran layar aktual
+                        # Ambil ukuran layar FISIK via mss (DPI-safe)
+                        sw, sh = self._screen_w, self._screen_h
                         try:
-                            import win32api as _w32
-                            sw = _w32.GetSystemMetrics(0)
-                            sh = _w32.GetSystemMetrics(1)
-                            self._screen_w = sw
-                            self._screen_h = sh
+                            import mss
+                            with mss.mss() as sct:
+                                monitor = sct.monitors[1]
+                                sw = monitor["width"]
+                                sh = monitor["height"]
+                                self._screen_w = sw
+                                self._screen_h = sh
                         except Exception:
-                            sw, sh = self._screen_w, self._screen_h
+                            try:
+                                import win32api as _w32
+                                sw = _w32.GetSystemMetrics(0)
+                                sh = _w32.GetSystemMetrics(1)
+                                self._screen_w = sw
+                                self._screen_h = sh
+                            except Exception:
+                                pass
 
                         # Eksekusi via RemoteControlAgent
                         if self._remote_ctrl:

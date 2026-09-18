@@ -591,7 +591,7 @@ class MonitoringApp:
             self._start_remote_frame_loop()
         except Exception as _e:
             self.log(f"[Warning] remote_frame_loop error: {_e}")
-
+        
         try:
             self._start_fast_action_loop()
         except Exception as _e:
@@ -617,6 +617,90 @@ class MonitoringApp:
             self._update_feature_ui(feature, enabled)
 
         self.start_connection_check()
+
+        # =========================================================
+    # REMOTE INPUT LOOP (HTTP polling fallback)
+    # =========================================================
+    def _start_remote_input_loop(self):
+        """
+        Loop terpisah untuk poll input events via HTTP (fallback).
+
+        Kenapa perlu:
+        - Browser kirim input via DataChannel (P2P) kalau WebRTC OK
+        - Kalau DataChannel gagal → browser kirim HTTP POST /remote/input
+        - Server simpan ke DB (remote_input_events) kalau Reverb down
+        - Agent HARUS poll GET /remote/events untuk eksekusi
+
+        Loop ini SELALU jalan saat remote aktif, terlepas WebRTC OK atau tidak.
+        Kalau Reverb OK, events di DB biasanya kosong (sudah via broadcast),
+        jadi polling ini tidak membebani.
+        """
+        import threading as _t
+        import time as _time
+
+        def _loop():
+            while True:
+                _time.sleep(0.3)  # poll tiap 300ms
+                try:
+                    if not self.data_sender.is_registered():
+                        continue
+
+                    # Cek remote status (hemat request kalau idle)
+                    status = self.data_sender.fetch_remote_status()
+                    if not status.get("success") or not status.get("remote_active"):
+                        _time.sleep(2.0)  # idle lebih lama
+                        continue
+
+                    # Ambil events dari DB
+                    result = self.data_sender.fetch_remote_events()
+                    if not result.get("success"):
+                        continue
+
+                    events = result.get("events", [])
+                    if not events:
+                        continue
+
+                    # Ambil ukuran layar akurat via mss (DPI-safe)
+                    sw, sh = 1920, 1080
+                    try:
+                        import mss
+                        with mss.mss() as sct:
+                            monitor = sct.monitors[1]
+                            sw = monitor["width"]
+                            sh = monitor["height"]
+                    except Exception:
+                        try:
+                            sw = win32api.GetSystemMetrics(0)
+                            sh = win32api.GetSystemMetrics(1)
+                        except Exception:
+                            pass
+
+                    # Eksekusi tiap event
+                    for ev in events:
+                        try:
+                            ev_type = ev.get("type", "")
+                            payload = ev.get("payload", {})
+                            if isinstance(payload, str):
+                                try:
+                                    payload = json.loads(payload)
+                                except Exception:
+                                    payload = {}
+
+                            if self.remote_control:
+                                self.remote_control._execute_event(
+                                    {"type": ev_type, "payload": payload}, sw, sh
+                                )
+                                if ev_type != "mouse_move":
+                                    self.log(f"[RemoteInput] HTTP: {ev_type}")
+                        except Exception as _ee:
+                            self.log(f"[RemoteInput] Exec error: {_ee}")
+
+                except Exception as _e:
+                    self.log(f"[RemoteInput] Loop error: {_e}")
+                    _time.sleep(2.0)
+
+        _t.Thread(target=_loop, daemon=True).start()
+        self.log("[RemoteInput] HTTP polling loop started")
 
     # =========================================================
     # REMOTE FRAME LOOP (WebRTC-first + HTTP polling fallback)
@@ -2647,6 +2731,8 @@ class MonitoringApp:
                         reverb_flag[0] = True
                         self.log(f"[Reverb] Berhasil subscribe channel {channel}")
 
+                        
+
                     # Chat message dari admin
                     elif (
                         event == "App\\Events\\ChatMessageSent"
@@ -2677,28 +2763,38 @@ class MonitoringApp:
                             self.data_sender.ack_chat_end()
                             self.log("[Reverb] Chat diakhiri admin")
 
-                    # Remote input via Reverb (mouse/keyboard real-time)
-                    elif (
-                        event == "remote.input"
-                        or event == ".remote.input"
-                        or event.endswith(".remote.input")
-                    ):
-                        ev_type = inner.get("type", "")
-                        payload = inner.get("payload", {})
-                        if self.remote_control:
-                            try:
-                                sw = win32api.GetSystemMetrics(0)
-                                sh = win32api.GetSystemMetrics(1)
-                            except Exception:
+                        # Remote input via Reverb (mouse/keyboard real-time                               
+                        elif (
+                            event == "remote.input"
+                            or event == ".remote.input"
+                            or event.endswith(".remote.input")
+                        ):
+                            ev_type = inner.get("type", "")
+                            payload = inner.get("payload", {})
+                            if self.remote_control:
+                                # Ambil ukuran layar akurat via mss (DPI-safe)
                                 sw, sh = 1920, 1080
-                            try:
-                                self.remote_control._execute_event(
-                                    {"type": ev_type, "payload": payload}, sw, sh
-                                )
-                                if ev_type != "mouse_move":
-                                    self.log(f"[Reverb] Remote input: {ev_type}")
-                            except Exception as _ee:
-                                self.log(f"[Reverb] Remote input error: {_ee}")
+                                try:
+                                    import mss
+                                    with mss.mss() as sct:
+                                        monitor = sct.monitors[1]
+                                        sw = monitor["width"]
+                                        sh = monitor["height"]
+                                except Exception:
+                                    try:
+                                        sw = win32api.GetSystemMetrics(0)
+                                        sh = win32api.GetSystemMetrics(1)
+                                    except Exception:
+                                        pass
+
+                                try:
+                                    self.remote_control._execute_event(
+                                        {"type": ev_type, "payload": payload}, sw, sh
+                                    )
+                                    if ev_type != "mouse_move":
+                                        self.log(f"[Reverb] Remote input: {ev_type}")
+                                except Exception as _ee:
+                                    self.log(f"[Reverb] Remote input error: {_ee}")
 
                     # Terminate signal via Reverb (real-time)
                     elif (

@@ -5,7 +5,7 @@ Flow:
   Browser Admin → DataChannel JSON event → _execute_event() → Windows native input
 
 Input methods:
-  - mouse: win32api.SetCursorPos + win32api.mouse_event (reliable, no ctypes struct issue)
+  - mouse: win32api.SetCursorPos + win32api.mouse_event (reliable)
   - keyboard: win32api.keybd_event
 """
 import time
@@ -54,6 +54,7 @@ _KEY_MAP = {
     "NumpadEnter": win32con.VK_RETURN,
 }
 
+
 def _key_to_vk(key: str):
     if key in _KEY_MAP:
         return _KEY_MAP[key]
@@ -66,9 +67,11 @@ def _key_to_vk(key: str):
 
 class RemoteControlAgent:
     """
-    Menerima event dari DataChannel dan mengeksekusi sebagai Windows native input.
-    Tidak punya thread capture sendiri — capture dilakukan oleh RemoteControlAgent
-    versi lama atau WebRTC ScreenCaptureTrack.
+    Menerima event dari DataChannel/Reverb/HTTP dan mengeksekusi sebagai
+    Windows native input.
+
+    Tidak punya thread capture sendiri — capture dilakukan oleh
+    WebRtcStreamer (ScreenCaptureTrack) atau HTTP fallback di main_app.py.
     """
 
     def __init__(self, data_sender, log_callback=None):
@@ -81,8 +84,9 @@ class RemoteControlAgent:
         self._vx            = 0
         self._vy            = 0
 
-        # Cursor fisik tidak di-restore setelah click — tetap di posisi klik terakhir
-        # Ini adalah behavior remote desktop yang correct (1x klik cukup)
+        # Simpan posisi terakhir klik supaya bisa dipakai scroll
+        self._last_x        = 0
+        self._last_y        = 0
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
     def stop_watching(self):
@@ -100,7 +104,8 @@ class RemoteControlAgent:
     # ── Main event handler ───────────────────────────────────────────────────
     def _execute_event(self, event: dict, screen_width: int, screen_height: int):
         """
-        Entry point dari DataChannel.
+        Entry point dari DataChannel / Reverb / HTTP polling.
+
         event = { "type": "mouse_down"|"mouse_up"|..., "payload": {...} }
         screen_width/height = resolusi FISIK monitor agent (dari mss).
         """
@@ -123,9 +128,8 @@ class RemoteControlAgent:
                 y   = int(float(payload.get("y", self._vy / max(screen_height, 1))) * screen_height)
                 btn = payload.get("button", "left")
                 self._vx, self._vy = x, y
+                self._last_x, self._last_y = x, y
 
-                # Pindahkan cursor ke target, cursor TETAP di sana setelah down
-                # (tidak di-restore agar Windows melihat DOWN+UP di posisi yang SAMA)
                 self.log(f"[Agent Remote Input] EXECUTING mouse_down {btn} at screen ({x},{y})")
                 self._do_mouse_down(x, y, btn)
                 self.log(f"[Agent Remote Input] NATIVE INPUT SUCCESS mouse_down")
@@ -136,13 +140,10 @@ class RemoteControlAgent:
                 y   = int(float(payload.get("y", self._vy / max(screen_height, 1))) * screen_height)
                 btn = payload.get("button", "left")
                 self._vx, self._vy = x, y
+                self._last_x, self._last_y = x, y
 
-                # UP di posisi yang sama dengan DOWN — cursor tetap di (x,y) setelah ini
-                # Windows akan melihat DOWN(x,y) + UP(x,y) = klik valid 1x
                 self.log(f"[Agent Remote Input] EXECUTING mouse_up {btn} at screen ({x},{y})")
                 self._do_mouse_up(x, y, btn)
-                # Cursor sengaja dibiarkan di (x,y) — tidak di-restore
-                # Ini membuat remote desktop terasa lebih natural
                 self.log(f"[Agent Remote Input] NATIVE INPUT SUCCESS mouse_up - cursor stays at ({x},{y})")
 
             # ── Double click ──────────────────────────────────────────────
@@ -150,16 +151,19 @@ class RemoteControlAgent:
                 x   = int(float(payload.get("x", self._vx / max(screen_width,  1))) * screen_width)
                 y   = int(float(payload.get("y", self._vy / max(screen_height, 1))) * screen_height)
                 self._vx, self._vy = x, y
+                self._last_x, self._last_y = x, y
 
                 self.log(f"[Agent Remote Input] EXECUTING dblclick at screen ({x},{y})")
-                # SetCursorPos sekali, lalu kirim DOWN+UP+DOWN+UP tanpa restore
-                win32api.SetCursorPos((x, y))
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP,   0, 0, 0, 0)
-                time.sleep(0.05)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP,   0, 0, 0, 0)
-                # Cursor tetap di (x,y)
+                try:
+                    win32api.SetCursorPos((x, y))
+                    time.sleep(0.01)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP,   0, 0, 0, 0)
+                    time.sleep(0.05)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP,   0, 0, 0, 0)
+                except Exception as _e:
+                    self.log(f"[Agent Remote Input] dblclick error: {_e}")
                 self.log(f"[Agent Remote Input] NATIVE INPUT SUCCESS dblclick")
 
             # ── Scroll ───────────────────────────────────────────────────
@@ -169,11 +173,17 @@ class RemoteControlAgent:
                 # Windows WHEEL: positive = forward/up, negative = backward/down
                 wheel_delta = 120 if raw_delta > 0 else -120
 
-                self.log(f"[Agent Remote Input] EXECUTING scroll delta={wheel_delta} at virtual ({self._vx},{self._vy})")
+                # Kalau tidak ada posisi virtual, pakai posisi klik terakhir
+                scroll_x = self._vx if self._vx > 0 else self._last_x
+                scroll_y = self._vy if self._vy > 0 else self._last_y
+
+                self.log(f"[Agent Remote Input] EXECUTING scroll delta={wheel_delta} at ({scroll_x},{scroll_y})")
                 try:
                     saved = win32api.GetCursorPos()
-                    win32api.SetCursorPos((self._vx, self._vy))
+                    win32api.SetCursorPos((scroll_x, scroll_y))
+                    time.sleep(0.005)
                     win32api.mouse_event(win32con.MOUSEEVENTF_WHEEL, 0, 0, wheel_delta, 0)
+                    # Restore cursor (kembali ke posisi sebelumnya — tidak ganggu user)
                     win32api.SetCursorPos(saved)
                 except Exception as e:
                     self.log(f"[Agent Remote Input] scroll error: {e}")
@@ -185,8 +195,7 @@ class RemoteControlAgent:
                 is_down = (etype == "key_down")
                 flag    = 0 if is_down else win32con.KEYEVENTF_KEYUP
 
-                if etype not in ("mouse_move",):
-                    self.log(f"[Agent Remote Input] EXECUTING {etype} key='{key}' ctrl={payload.get('ctrl')} alt={payload.get('alt')} shift={payload.get('shift')}")
+                self.log(f"[Agent Remote Input] EXECUTING {etype} key='{key}' ctrl={payload.get('ctrl')} alt={payload.get('alt')} shift={payload.get('shift')}")
 
                 # Press modifiers BEFORE key (on keydown)
                 if is_down:
@@ -251,10 +260,15 @@ class RemoteControlAgent:
     # ── Mouse helpers ─────────────────────────────────────────────────────────
     def _do_mouse_down(self, x: int, y: int, button: str):
         """
-        Kirim mouse_down di koordinat (x,y) layar agent.
-        Menggunakan SetCursorPos lalu mouse_event — reliable untuk semua app Windows.
+        Kirim mouse_down di koordinat (x,y).
+        SetCursorPos → DOWN. Cursor dibiarkan di (x,y) supaya UP di posisi sama.
         """
-        win32api.SetCursorPos((x, y))
+        try:
+            win32api.SetCursorPos((x, y))
+            # Kasih waktu Windows update cursor position (10ms cukup)
+            time.sleep(0.01)
+        except Exception:
+            pass
 
         if button == "right":
             win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
@@ -265,9 +279,10 @@ class RemoteControlAgent:
 
     def _do_mouse_up(self, x: int, y: int, button: str):
         """
-        Kirim mouse_up. Cursor sudah ada di (x,y) dari _do_mouse_down.
-        Tidak restore cursor — cursor tetap di posisi klik (remote desktop behavior).
+        Kirim mouse_up. Cursor sudah di (x,y) dari _do_mouse_down.
+        Pastikan cursor tidak dipindah supaya DOWN+UP = klik valid.
         """
+        # JANGAN SetCursorPos lagi — cursor sudah di posisi dari _do_mouse_down
         if button == "right":
             win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
         elif button == "middle":
