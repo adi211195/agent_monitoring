@@ -8,3 +8,8 @@ opencv-python==4.9.0.80
 winsdk==1.0.0.b10
 pynput==1.7.6
 watchdog==4.0.0
+aiohttp
+aiortc
+numpy==1.26.4
+av
+websocket-client

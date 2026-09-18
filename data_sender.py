@@ -8,6 +8,7 @@ import os
 from datetime import datetime
 from app_paths import get_app_data_path
 
+
 def get_ip_and_location() -> dict:
     """Ambil IP publik dan info geolokasi jaringan via ip-api.com (gratis, 45 req/menit)."""
     try:
@@ -45,7 +46,6 @@ def get_wifi_info() -> dict:
     try:
         no_window = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
 
-        # netsh wlan show interfaces - SSID, auth, mode
         r = subprocess.run(
             ['netsh', 'wlan', 'show', 'interfaces'],
             capture_output=True, text=True, timeout=8,
@@ -68,7 +68,6 @@ def get_wifi_info() -> dict:
         info['wifi_lan_mode'] = parse_netsh(wlan, 'Radio type')
         info['wifi_type']     = 'Wifi' if info['wifi_ssid'] else None
 
-        # PowerShell untuk IP, IPv6, Subnet
         ps_cmd = (
             "Get-NetIPAddress | Where-Object {"
             " $_.InterfaceAlias -like '*Wi-Fi*' -or $_.InterfaceAlias -like '*WLAN*'"
@@ -91,10 +90,9 @@ def get_wifi_info() -> dict:
                     prefix = addr.get('PrefixLength', 0)
                     if family == 2 and not ip.startswith('169.'):   # IPv4
                         info['wifi_ip']     = ip
-                        # Convert prefix to subnet mask
                         mask = (0xFFFFFFFF << (32 - int(prefix))) & 0xFFFFFFFF
                         info['wifi_subnet'] = '.'.join(
-                            str((mask >> (8 * i)) & 0xFF) for i in [3,2,1,0]
+                            str((mask >> (8 * i)) & 0xFF) for i in [3, 2, 1, 0]
                         )
                     elif family == 23:  # IPv6
                         if not ip.startswith('fe80') or not info['wifi_ipv6']:
@@ -102,7 +100,6 @@ def get_wifi_info() -> dict:
             except Exception:
                 pass
 
-        # Fallback IP dari ipconfig jika PowerShell gagal
         if not info['wifi_ip']:
             import socket as _sock
             try:
@@ -122,22 +119,19 @@ class DataSender:
 
         self.server_url = config.get("server_url")
         self.device_id = config.get("device_id")
-        self.token = config.get("token")  # Token Sanctum, didapat saat register_device()
+        self.token = config.get("token")
 
-        # Jika device_id belum ada di config, hasilkan dari hardware
         if not self.device_id:
             self.device_id = self._generate_hardware_id()
 
-        # Jika ada server_url yang dioper saat init, gunakan itu (biasanya untuk testing)
         if server_url:
             self.server_url = server_url
 
+        # Cache untuk fetch_config_cached
+        self._last_config_fetch = 0
+        self._cached_config = None
+
     def _headers(self, with_json=True):
-        """
-        Header standar untuk semua request ke API.
-        Menyertakan token Sanctum (kalau sudah ada) supaya endpoint yang
-        diproteksi auth:sanctum bisa diakses.
-        """
         headers = {"Accept": "application/json"}
         if with_json:
             headers["Content-Type"] = "application/json"
@@ -146,34 +140,16 @@ class DataSender:
         return headers
 
     def _resolve_config_path(self):
-        """
-        Pakai path absolut di %LOCALAPPDATA%\\MonitoringApp\\device_config.json,
-        bukan path relatif "device_config.json".
-
-        Ini penting karena aplikasi sekarang di-install ke Program Files dan/atau
-        dijalankan otomatis lewat Windows Startup / Task Scheduler, di mana
-        current working directory belum tentu sama dengan folder tempat exe
-        berada (dan Program Files sendiri terproteksi, tidak writable untuk user
-        biasa) -- kalau tetap pakai path relatif, config bisa gagal
-        tersimpan/terbaca dengan PermissionError.
-        """
         return get_app_data_path("device_config.json")
 
     def _generate_hardware_id(self):
-        """Menghasilkan ID unik yang konsisten untuk komputer yang sama (Hardware ID)"""
         try:
-            # Menggabungkan MAC address, hostname, dan platform
             node = uuid.getnode()
             hostname = platform.node()
             system = platform.system()
-            
-            # Kita buat string unik berdasarkan hardware
             unique_str = f"{node}-{hostname}-{system}"
-            
-            # Gunakan uuid5 dengan namespace DNS untuk menghasilkan UUID yang konsisten dari string tersebut
             return str(uuid.uuid5(uuid.NAMESPACE_DNS, unique_str))
-        except Exception as e:
-            # Fallback jika gagal (sangat jarang)
+        except Exception:
             return str(uuid.uuid4())
 
     def _load_config(self):
@@ -186,15 +162,11 @@ class DataSender:
         return {}
 
     def is_registered(self):
-        """Mengecek apakah device sudah terdaftar (punya device_id, server_url, dan token)"""
         return bool(self.device_id and self.server_url and self.token)
 
     def register_device(self, server_url):
-        """Mendaftarkan device ke server baru"""
-        # Bersihkan URL (hapus trailing slash)
         base_url = server_url.strip().rstrip('/')
-        
-        # Tentukan register endpoint dan base monitoring endpoint
+
         if "/api/monitoring" in base_url:
             register_url = f"{base_url}/register"
             target_server_url = base_url
@@ -202,18 +174,13 @@ class DataSender:
             register_url = f"{base_url}/api/monitoring/register"
             target_server_url = f"{base_url}/api/monitoring"
 
-        # Gunakan device_id yang sudah ada (hardware ID) atau buat baru jika belum ada
         if not self.device_id:
             self.device_id = self._generate_hardware_id()
-        
+
         device_id = self.device_id
-        
-        # Simpan sementara untuk fallback jika gagal
         old_server_url = self.server_url
-        
         system_info = self._get_system_info()
 
-        # SESUAIKAN DENGAN EKSPEKTASI SERVER (Key: device_info)
         payload = {
             "device_info": system_info,
             "timestamp": datetime.now().isoformat()
@@ -226,15 +193,12 @@ class DataSender:
                 token = data.get("token")
 
                 if not token:
-                    # Server versi lama belum kirim token -> jangan lanjut,
-                    # supaya tidak "sukses" registrasi tapi ujung-ujungnya 401 terus
                     self.server_url = old_server_url
                     return {"success": False, "error": "Server tidak mengembalikan token. Pastikan server sudah menerapkan Sanctum."}
 
                 self.server_url = target_server_url
                 self.token = token
 
-                # Simpan permanen ke config
                 with open(self.config_path, "w") as f:
                     json.dump({
                         "device_id": self.device_id,
@@ -242,26 +206,21 @@ class DataSender:
                         "token": self.token
                     }, f, indent=4)
                 return {"success": True, "device_id": device_id}
-            
-            # Revert jika gagal
+
             self.server_url = old_server_url
             return {"success": False, "error": f"Server returned status {response.status_code}"}
         except Exception as e:
-            # Revert jika error
             self.server_url = old_server_url
             return {"success": False, "error": str(e)}
 
     def _get_or_create_device_id(self):
-        # Method ini sekarang digantikan oleh logika di init dan register_device
         return self.device_id
 
     def _get_system_info(self):
-        # Mendapatkan info CPU, RAM, Disk
         cpu_usage = psutil.cpu_percent(interval=None)
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage('/')
-        
-        # Info Baterai
+
         battery_info = {}
         try:
             battery = psutil.sensors_battery()
@@ -271,17 +230,14 @@ class DataSender:
                     "power_plugged": battery.power_plugged,
                     "secsleft": battery.secsleft
                 }
-        except:
+        except Exception:
             pass
 
-        # Detail Tambahan - Manufacturer & Model
-        # Gunakan PowerShell (lebih reliable di Windows 10/11 karena WMIC deprecated)
         manufacturer = "Unknown"
         model = "Unknown"
         try:
             if platform.system() == "Windows":
                 no_window = subprocess.CREATE_NO_WINDOW
-                # PowerShell Get-CimInstance (lebih akurat dari WMIC)
                 ps_cmd = (
                     "Get-CimInstance Win32_ComputerSystem | "
                     "Select-Object -ExpandProperty Manufacturer"
@@ -310,13 +266,12 @@ class DataSender:
         except Exception:
             pass
 
-        # MAC Address dari network interface utama
         mac_address = "Unknown"
         try:
             import uuid as _uuid
             mac_int = _uuid.getnode()
             mac_address = ':'.join(
-                f'{(mac_int >> (5-i)*8) & 0xFF:02X}' for i in range(6)
+                f'{(mac_int >> (5 - i) * 8) & 0xFF:02X}' for i in range(6)
             )
         except Exception:
             pass
@@ -335,7 +290,7 @@ class DataSender:
             "os_version": platform.version(),
             "platform": (platform.platform().replace(
                 "Windows-10-", "Windows-11-"
-                ) if platform.system() == "Windows" and
+            ) if platform.system() == "Windows" and
                 int(platform.version().split(".")[2]) >= 22000
                 else platform.platform()),
             "processor": platform.processor(),
@@ -352,7 +307,7 @@ class DataSender:
                 "percent": disk.percent
             },
             "battery": battery_info,
-            **get_wifi_info(),  # WiFi info dari Windows
+            **get_wifi_info(),
             "python_version": platform.python_version(),
             "timestamp": datetime.now().isoformat()
         }
@@ -365,7 +320,6 @@ class DataSender:
             "location": location_data,
             "sent_at": datetime.now().isoformat()
         }
-
         try:
             response = requests.post(
                 self.server_url + "/app-usage",
@@ -389,7 +343,6 @@ class DataSender:
             "location": location_data,
             "sent_at": datetime.now().isoformat()
         }
-
         try:
             response = requests.post(
                 self.server_url + "/browsing-history",
@@ -410,23 +363,20 @@ class DataSender:
             "app_usage": self.send_app_usage(app_usage_data, location_data),
             "browsing_history": self.send_browsing_history(browsing_history_data, location_data)
         }
-
         return results
 
     def verify_registration(self):
-        """Memverifikasi apakah device_id masih terdaftar di server"""
         if not self.is_registered():
             return {"success": False, "error": "Not registered localy"}
-            
+
         verify_url = f"{self.server_url}/verify-registration"
         payload = {
             "device_id": self.device_id,
             "device_info": self._get_system_info(),
             "timestamp": datetime.now().isoformat()
         }
-        
+
         try:
-            # Gunakan timeout pendek untuk pengecekan berkala
             response = requests.post(verify_url, json=payload, timeout=10)
             if response.status_code == 200:
                 return {"success": True}
@@ -440,7 +390,6 @@ class DataSender:
             return {"success": False, "error": str(e)}
 
     def logout(self):
-        """Menghapus konfigurasi lokal (logout)"""
         self.device_id = None
         self.server_url = None
         self.token = None
@@ -448,7 +397,7 @@ class DataSender:
             try:
                 os.remove(self.config_path)
                 return True
-            except:
+            except Exception:
                 pass
         return False
 
@@ -456,39 +405,54 @@ class DataSender:
         """Mengambil konfigurasi lengkap dari API"""
         if not self.is_registered():
             return {"success": False, "error": "Not registered"}
-            
-        # Endpoint ini sekarang mengenali device dari token (Authorization: Bearer),
-        # jadi tidak perlu lagi mengirim device_id sebagai parameter.
+
         config_url = f"{self.server_url}/config"
-        
+
         try:
             response = requests.get(config_url, headers=self._headers(with_json=False), timeout=10)
             if response.status_code == 401:
                 return {"success": False, "error": "Unauthorized - token tidak valid, perlu register ulang", "code": 401}
             if response.status_code == 200:
                 data = response.json()
-                # Ekstrak objek config dari respons: {"status": "success", "config": {...}}
                 config_data = data.get("config", {})
-                
-                # Simpan ke config lokal untuk fallback
+
                 current_config = self._load_config()
                 current_config["last_config"] = config_data
-                
+
                 with open(self.config_path, "w") as f:
                     json.dump(current_config, f, indent=4)
-                    
+
                 return {"success": True, "config": config_data}
             return {"success": False, "error": f"Status {response.status_code}"}
         except Exception as e:
-            # Fallback ke config terakhir jika gagal (offline)
             current_config = self._load_config()
             if "last_config" in current_config:
                 return {"success": True, "config": current_config["last_config"], "is_fallback": True}
             return {"success": False, "error": str(e)}
 
+    def fetch_config_cached(self, max_age_seconds=300):
+        """
+        Fetch config hanya jika cache sudah kadaluarsa.
+        Mengurangi beban server drastis — config jarang berubah.
+        """
+        import time as _time
+        now = _time.time()
+
+        if not hasattr(self, '_last_config_fetch'):
+            self._last_config_fetch = 0
+        if not hasattr(self, '_cached_config'):
+            self._cached_config = None
+
+        if (now - self._last_config_fetch < max_age_seconds) and self._cached_config:
+            return {"success": True, "config": self._cached_config, "cached": True}
+
+        result = self.fetch_config()
+        if result.get("success"):
+            self._cached_config = result["config"]
+            self._last_config_fetch = now
+        return result
+
     def fetch_interval(self):
-        # Method ini sekarang bisa digantikan oleh fetch_config, 
-        # tapi tetap dipertahankan untuk kompatibilitas jika perlu
         result = self.fetch_config()
         if result.get("success"):
             interval = result["config"].get("sync_interval", 300)
@@ -529,10 +493,8 @@ class DataSender:
             "app_usage": self.send_app_usage(app_usage_data, location_data),
             "browsing_history": self.send_browsing_history(browsing_history_data, location_data)
         }
-
         if screenshot_data:
             results["screenshot"] = self.send_screenshot(screenshot_data, location_data)
-
         return results
 
     def send_recording(self, recording_data, location_data=None):
@@ -652,7 +614,6 @@ class DataSender:
         if not location_data:
             return {"success": False, "error": "No location data provided"}
 
-        # Tambah IP & geolocation info dari network
         net_info = get_ip_and_location()
         if net_info:
             location_data.update({
@@ -687,22 +648,18 @@ class DataSender:
             return {"success": False, "error": str(e)}
 
     def download_file(self, file_id, local_path):
-        """Download file dari server ke path lokal"""
         if not self.is_registered():
             return {"success": False, "error": "Not registered"}
-            
-        # Dapatkan base URL server (tanpa /api/monitoring)
+
         base_url = self.server_url.replace("/api/monitoring", "")
         download_url = f"{base_url}/api/monitoring/downloadFile/{file_id}"
-        
+
         try:
             response = requests.get(download_url, headers=self._headers(with_json=False), timeout=60, stream=True)
-            
+
             if response.status_code == 200:
-                # Pastikan direktori tujuan ada
                 os.makedirs(os.path.dirname(local_path), exist_ok=True)
-                
-                # Tulis file secara streaming
+
                 with open(local_path, "wb") as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         f.write(chunk)
@@ -713,18 +670,17 @@ class DataSender:
             return {"success": False, "error": str(e)}
 
     def send_download_logs(self, download_logs):
-        """Send download activity logs to server"""
         if not download_logs:
             return {"success": True, "message": "No logs to send"}
-            
+
         if not self.is_registered():
             return {"success": False, "error": "Not registered"}
-            
+
         payload = {
             "device_info": self._get_system_info(),
             "download_activities": download_logs
         }
-        
+
         try:
             response = requests.post(
                 self.server_url + "/download-activity",
@@ -745,10 +701,6 @@ class DataSender:
     # REMOTE CONTROL
     # =========================
     def fetch_pending_actions(self):
-        """
-        Mengambil daftar perintah remote control yang masih menunggu dieksekusi
-        (Shutdown / Restart / Send Messages) dari dashboard admin.
-        """
         if not self.is_registered():
             return {"success": False, "error": "Not registered"}
 
@@ -768,10 +720,6 @@ class DataSender:
             return {"success": False, "error": str(e)}
 
     def acknowledge_action(self, action_id, status):
-        """
-        Melaporkan hasil eksekusi perintah remote control ke server.
-        status hanya boleh 'completed' atau 'failed'.
-        """
         if not self.is_registered():
             return {"success": False, "error": "Not registered"}
 
@@ -789,10 +737,9 @@ class DataSender:
             return {"success": False, "error": str(e)}
 
     # =========================
-    # REMOTE DESKTOP CONTROL (live screen + mouse/keyboard)
+    # REMOTE DESKTOP CONTROL
     # =========================
     def fetch_remote_status(self):
-        """Cek apakah admin sedang membuka sesi remote control untuk device ini."""
         if not self.is_registered():
             return {"success": False, "error": "Not registered"}
 
@@ -811,13 +758,12 @@ class DataSender:
 
     def upload_remote_frame(self, image_base64, width, height):
         """
-        Upload frame layar ke server. Response sekarang langsung berisi
-        antrian events (mouse/keyboard/terminate) yang perlu dieksekusi —
-        menggantikan panggilan fetch_remote_events() yang terpisah.
-        Ini yang paling signifikan mengurangi lag remote control.
+        Upload frame layar ke server. Response berisi events (mouse/keyboard/
+        terminate) yang perlu dieksekusi.
         """
         if not self.is_registered():
-            return {"success": False, "error": "Not registered", "remote_active": False, "events": []}
+            return {"success": False, "error": "Not registered",
+                    "remote_active": False, "events": []}
 
         payload = {
             "image_base64": image_base64,
@@ -830,7 +776,7 @@ class DataSender:
                 f"{self.server_url}/remote/frame",
                 json=payload,
                 headers=self._headers(),
-                timeout=5
+                timeout=10
             )
             if response.status_code == 200:
                 data = response.json()
@@ -839,12 +785,22 @@ class DataSender:
                     "remote_active": data.get("remote_active", True),
                     "events": data.get("events", []),
                 }
-            return {"success": False, "error": f"Status {response.status_code}", "remote_active": True, "events": []}
+            if response.status_code == 401:
+                return {"success": False, "error": "Unauthorized",
+                        "remote_active": False, "events": []}
+            return {"success": False, "error": f"Status {response.status_code}",
+                    "remote_active": True, "events": []}
+        except requests.exceptions.ConnectionError:
+            return {"success": False, "error": "Connection refused",
+                    "remote_active": True, "events": []}
+        except requests.exceptions.Timeout:
+            return {"success": False, "error": "Timeout",
+                    "remote_active": True, "events": []}
         except Exception as e:
-            return {"success": False, "error": str(e), "remote_active": True, "events": []}
+            return {"success": False, "error": str(e),
+                    "remote_active": True, "events": []}
 
     def fetch_remote_events(self):
-        """Ambil antrian event mouse/keyboard yang perlu dieksekusi."""
         if not self.is_registered():
             return {"success": False, "error": "Not registered"}
 
@@ -862,11 +818,6 @@ class DataSender:
             return {"success": False, "error": str(e)}
 
     def send_active_apps(self, apps_list):
-        """
-        Kirim snapshot aplikasi yang sedang terbuka SAAT INI (bukan riwayat).
-        Dipanggil berkala (setiap connection_check_interval, default 30 detik)
-        supaya dashboard admin bisa menampilkan kondisi "live".
-        """
         payload = {
             "device_info": self._get_system_info(),
             "active_apps": apps_list,
@@ -886,7 +837,6 @@ class DataSender:
             return {"success": False, "error": str(e)}
 
     def terminate_app(self, app_name):
-        """Kirim request terminate dari server (setelah admin klik Terminate di dashboard)."""
         if not self.is_registered():
             return {"success": False, "error": "Not registered"}
 
@@ -904,11 +854,6 @@ class DataSender:
             return {"success": False, "error": str(e)}
 
     def fetch_pending_terminate_actions(self):
-        """
-        Ambil device_actions dengan type 'Terminate App' yang masih in_progress.
-        Dipanggil tiap 5 detik oleh fast_action_loop di main_app.py supaya
-        terminate bisa jalan tanpa menunggu connection_check_interval (30 detik).
-        """
         if not self.is_registered():
             return {"success": False, "error": "Not registered", "actions": []}
 
@@ -919,8 +864,7 @@ class DataSender:
                 timeout=5
             )
             if response.status_code == 200:
-                data    = response.json()
-                # Filter hanya Terminate App dari semua pending actions
+                data = response.json()
                 actions = [a for a in data.get("actions", [])
                            if a.get("action_type") == "Terminate App"]
                 return {"success": True, "actions": actions}
@@ -928,9 +872,8 @@ class DataSender:
         except Exception as e:
             return {"success": False, "error": str(e), "actions": []}
 
-    # ── Remote Chat ──────────────────────────────────────────────────────────────
+    # ── Remote Chat ──────────────────────────────────────────────
     def fetch_chat_messages(self):
-        """Ambil pesan masuk dari admin yang belum dibaca."""
         if not self.is_registered():
             return {"success": False, "messages": []}
         try:
@@ -946,7 +889,6 @@ class DataSender:
             return {"success": False, "messages": []}
 
     def send_chat_reply(self, message):
-        """Agent kirim balasan ke admin."""
         if not self.is_registered():
             return {"success": False}
         try:
@@ -961,7 +903,6 @@ class DataSender:
             return {"success": False}
 
     def ack_chat_end(self):
-        """Konfirmasi ke server bahwa agent sudah proses __CHAT_ENDED__, hapus dari DB."""
         if not self.is_registered():
             return
         try:
@@ -975,15 +916,12 @@ class DataSender:
             pass
 
     def send_agent_chat(self, message):
-        """Agent kirim pesan ke admin (bisa initiate duluan)."""
         return self.send_chat_reply(message)
 
     def fetch_all_chat_messages(self):
-        """Ambil semua pesan chat (admin+agent) untuk ditampilkan di tab Monitoring agent."""
         if not self.is_registered():
             return {"success": False, "messages": []}
         try:
-            # Gunakan endpoint yang sama tapi parameter berbeda
             r = requests.get(
                 f"{self.server_url}/chat/all",
                 headers=self._headers(with_json=False),
@@ -996,7 +934,6 @@ class DataSender:
             return {"success": False, "messages": []}
 
     def fetch_reverb_config(self):
-        """Ambil konfigurasi Reverb untuk connect WebSocket."""
         if not self.is_registered():
             return None
         try:
@@ -1012,11 +949,9 @@ class DataSender:
             return None
 
     def get_channel_auth(self, socket_id, channel_name):
-        """Dapatkan auth token untuk private channel Reverb via Sanctum API."""
         if not self.is_registered():
             return None
         try:
-            # Endpoint /api/monitoring/broadcasting/auth (auth via Sanctum token)
             r = requests.post(
                 f"{self.server_url}/broadcasting/auth",
                 json={"socket_id": socket_id, "channel_name": channel_name},
@@ -1029,9 +964,8 @@ class DataSender:
         except Exception:
             return None
 
-    # ── WebRTC Signaling ─────────────────────────────────────────────────
+    # ── WebRTC Signaling ─────────────────────────────────────
     def send_webrtc_offer(self, sdp: str, sdp_type: str):
-        """Agent kirim SDP offer ke server → diteruskan ke admin."""
         if not self.is_registered():
             return
         try:
@@ -1041,11 +975,10 @@ class DataSender:
                 headers=self._headers(),
                 timeout=10,
             )
-        except Exception as e:
+        except Exception:
             pass
 
     def send_webrtc_ice(self, candidate: dict):
-        """Agent kirim ICE candidate ke server → diteruskan ke admin."""
         if not self.is_registered():
             return
         try:
@@ -1058,8 +991,21 @@ class DataSender:
         except Exception:
             pass
 
+    def send_webrtc_answer(self, sdp: str, sdp_type: str):
+        """Agent kirim SDP answer ke server → diteruskan ke admin."""
+        if not self.is_registered():
+            return
+        try:
+            requests.post(
+                f"{self.server_url}/webrtc/offer",
+                json={"sdp": sdp, "type": sdp_type},
+                headers=self._headers(),
+                timeout=10,
+            )
+        except Exception:
+            pass
+
     def send_installed_apps(self):
-        """Kirim daftar aplikasi terinstall ke server (dipanggil saat startup)."""
         if not self.is_registered():
             return
         try:
@@ -1077,7 +1023,6 @@ class DataSender:
             pass
 
     def send_device_owner(self):
-        """Kirim info akun Windows/Microsoft ke server."""
         if not self.is_registered():
             return
         try:
@@ -1098,7 +1043,6 @@ class DataSender:
             pass
 
     def send_windows_users(self, users_list: list):
-        """Kirim semua Windows user accounts ke server."""
         if not self.is_registered():
             return {"success": False, "error": "Not registered"}
         try:
@@ -1148,10 +1092,8 @@ class DataSender:
         except Exception:
             pass
 
-
     # ── App Integrity ──────────────────────────────────────────
     def send_app_integrity_results(self, results: list):
-        """Kirim hasil scan integrity ke server."""
         if not results:
             return
         try:
@@ -1179,19 +1121,6 @@ class DataSender:
                 },
                 headers=self._headers(),
                 timeout=15,
-            )
-        except Exception:
-            pass
-    def send_webrtc_answer(self, sdp: str, sdp_type: str):
-        """Agent kirim SDP answer ke server → diteruskan ke admin."""
-        if not self.is_registered():
-            return
-        try:
-            requests.post(
-                f"{self.server_url}/webrtc/offer",  # reuse same endpoint, type=answer
-                json={"sdp": sdp, "type": sdp_type},
-                headers=self._headers(),
-                timeout=10,
             )
         except Exception:
             pass
