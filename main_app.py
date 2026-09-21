@@ -2486,7 +2486,7 @@ class MonitoringApp:
                         except Exception:
                             pass
 
-                    # Pending actions (Terminate App)
+                    # Pending actions — semua action types (HTTP polling fallback)
                     result = self.data_sender.fetch_pending_actions()
                     if not result.get("success"):
                         continue
@@ -2496,50 +2496,105 @@ class MonitoringApp:
                         details = action.get("details") or ""
                         aid = action.get("id")
 
-                        if atype == "Terminate App":
-                            app_name = details.strip()
-                            self.log(f"[FastAction] Terminate: '{app_name}'")
-                            terminated_ok = False
+                        self.log(f"[FastAction] Executing: {atype} (id={aid})")
 
-                            try:
-                                r = _sp.run(
-                                    ["taskkill", "/F", "/IM", app_name],
-                                    creationflags=_sp.CREATE_NO_WINDOW,
-                                    timeout=8, capture_output=True, text=True
-                                )
-                                if r.returncode == 0:
-                                    self.log(f"[FastAction] SUCCESS: {r.stdout.strip()}")
-                                    terminated_ok = True
-                                else:
-                                    self.log(f"[FastAction] taskkill rc={r.returncode}: {r.stderr.strip()}")
-                                    try:
-                                        for p in psutil.process_iter(["name", "pid"]):
-                                            try:
-                                                if p.info["name"].lower() == app_name.lower():
-                                                    p.kill()
-                                                    self.log(f"[FastAction] psutil killed {p.info['pid']}")
-                                                    terminated_ok = True
-                                            except Exception:
-                                                pass
-                                    except Exception:
-                                        pass
-                            except Exception as _e:
-                                self.log(f"[FastAction] Error: {_e}")
-
-                            self.data_sender.acknowledge_action(aid, "completed")
-
-                            # Langsung kirim active apps setelah terminate
-                            if terminated_ok:
+                        try:
+                            if atype == "Terminate App":
+                                app_name = details.strip()
+                                self.log(f"[FastAction] Terminate: '{app_name}'")
+                                terminated_ok = False
                                 try:
-                                    _time.sleep(0.3)
-                                    apps = self.app_monitor.get_active_apps_snapshot()
-                                    sig = tuple(sorted(a["app_name"].lower() for a in apps))
-                                    self.data_sender.send_active_apps(apps)
-                                    _last_active_apps_hash[0] = sig
-                                    _last_active_apps_send[0] = _time.time()
-                                    self.log(f"[FastAction] Active apps refreshed setelah terminate")
-                                except Exception as _ae:
-                                    self.log(f"[FastAction] Gagal refresh active apps: {_ae}")
+                                    r = _sp.run(
+                                        ["taskkill", "/F", "/IM", app_name],
+                                        creationflags=_sp.CREATE_NO_WINDOW,
+                                        timeout=8, capture_output=True, text=True
+                                    )
+                                    if r.returncode == 0:
+                                        self.log(f"[FastAction] SUCCESS: {r.stdout.strip()}")
+                                        terminated_ok = True
+                                    else:
+                                        self.log(f"[FastAction] taskkill rc={r.returncode}: {r.stderr.strip()}")
+                                        try:
+                                            for p in psutil.process_iter(["name", "pid"]):
+                                                try:
+                                                    if p.info["name"].lower() == app_name.lower():
+                                                        p.kill()
+                                                        self.log(f"[FastAction] psutil killed {p.info['pid']}")
+                                                        terminated_ok = True
+                                                except Exception:
+                                                    pass
+                                        except Exception:
+                                            pass
+                                except Exception as _e:
+                                    self.log(f"[FastAction] Terminate error: {_e}")
+                                self.data_sender.acknowledge_action(aid, "completed")
+                                # Refresh active apps setelah terminate
+                                if terminated_ok:
+                                    try:
+                                        _time.sleep(0.3)
+                                        apps = self.app_monitor.get_active_apps_snapshot()
+                                        sig = tuple(sorted(a["app_name"].lower() for a in apps))
+                                        self.data_sender.send_active_apps(apps)
+                                        _last_active_apps_hash[0] = sig
+                                        _last_active_apps_send[0] = _time.time()
+                                        self.log(f"[FastAction] Active apps refreshed setelah terminate")
+                                    except Exception as _ae:
+                                        self.log(f"[FastAction] Gagal refresh active apps: {_ae}")
+
+                            elif atype in ("Send Messages", "Send Message"):
+                                # Tampilkan popup pesan dari admin
+                                msg = details.strip() if details.strip() else "(Pesan kosong)"
+                                self.root.after(0, lambda m=msg: self._show_admin_message(m))
+                                self.log(f"[FastAction] Send Message: {msg[:50]}")
+                                self.data_sender.acknowledge_action(aid, "completed")
+
+                            elif atype == "Shutdown":
+                                self.root.after(0, lambda: messagebox.showwarning(
+                                    "Perintah Admin",
+                                    "Komputer ini akan dimatikan oleh admin dalam 30 detik."))
+                                _sp.run(["shutdown", "/s", "/t", "30"],
+                                        creationflags=_sp.CREATE_NO_WINDOW)
+                                self.log("[FastAction] Shutdown dijadwalkan 30s")
+                                self.data_sender.acknowledge_action(aid, "completed")
+
+                            elif atype == "Restart":
+                                self.root.after(0, lambda: messagebox.showwarning(
+                                    "Perintah Admin",
+                                    "Komputer ini akan direstart oleh admin dalam 30 detik."))
+                                _sp.run(["shutdown", "/r", "/t", "30"],
+                                        creationflags=_sp.CREATE_NO_WINDOW)
+                                self.log("[FastAction] Restart dijadwalkan 30s")
+                                self.data_sender.acknowledge_action(aid, "completed")
+
+                            elif atype == "Lock":
+                                import ctypes
+                                ctypes.windll.user32.LockWorkStation()
+                                self.log("[FastAction] Workstation locked")
+                                self.data_sender.acknowledge_action(aid, "completed")
+
+                            elif atype == "Screenshot":
+                                try:
+                                    self._take_screenshot()
+                                    self.log("[FastAction] Screenshot diambil")
+                                except Exception as _se:
+                                    self.log(f"[FastAction] Screenshot error: {_se}")
+                                self.data_sender.acknowledge_action(aid, "completed")
+
+                            elif atype == "Recording":
+                                try:
+                                    self._start_recording()
+                                    self.log("[FastAction] Recording dimulai")
+                                except Exception as _re:
+                                    self.log(f"[FastAction] Recording error: {_re}")
+                                self.data_sender.acknowledge_action(aid, "completed")
+
+                            else:
+                                self.log(f"[FastAction] Unknown action type: {atype}")
+                                self.data_sender.acknowledge_action(aid, "failed")
+
+                        except Exception as _ae:
+                            self.log(f"[FastAction] Error executing {atype}: {_ae}")
+                            self.data_sender.acknowledge_action(aid, "failed")
 
                 except Exception as _e:
                     self.log(f"[FastAction] Loop error: {_e}")
@@ -2703,9 +2758,11 @@ class MonitoringApp:
 
             socket_id_holder = [None]
             subscribed = [False]
+            # Simpan ws_url sebagai mutable agar bisa di-update saat reconnect
+            _ws_url_holder = [ws_url]
 
             def on_open(ws):
-                self.log(f"[Reverb] Connection successful — {ws_url}")
+                self.log(f"[Reverb] Connection successful — {_ws_url_holder[0]}")
 
             def on_message(ws, raw):
                 try:
@@ -2763,38 +2820,37 @@ class MonitoringApp:
                             self.data_sender.ack_chat_end()
                             self.log("[Reverb] Chat diakhiri admin")
 
-                        # Remote input via Reverb (mouse/keyboard real-time                               
-                        elif (
-                            event == "remote.input"
-                            or event == ".remote.input"
-                            or event.endswith(".remote.input")
-                        ):
-                            ev_type = inner.get("type", "")
-                            payload = inner.get("payload", {})
-                            if self.remote_control:
-                                # Ambil ukuran layar akurat via mss (DPI-safe)
-                                sw, sh = 1920, 1080
-                                try:
-                                    import mss
-                                    with mss.mss() as sct:
-                                        monitor = sct.monitors[1]
-                                        sw = monitor["width"]
-                                        sh = monitor["height"]
-                                except Exception:
-                                    try:
-                                        sw = win32api.GetSystemMetrics(0)
-                                        sh = win32api.GetSystemMetrics(1)
-                                    except Exception:
-                                        pass
 
+                    # Remote input via Reverb (mouse/keyboard real-time)
+                    elif (
+                        event == "remote.input"
+                        or event == ".remote.input"
+                        or event.endswith(".remote.input")
+                    ):
+                        ev_type = inner.get("type", "")
+                        payload = inner.get("payload", {})
+                        if self.remote_control:
+                            sw, sh = 1920, 1080
+                            try:
+                                import mss
+                                with mss.mss() as sct:
+                                    monitor = sct.monitors[1]
+                                    sw = monitor["width"]
+                                    sh = monitor["height"]
+                            except Exception:
                                 try:
-                                    self.remote_control._execute_event(
-                                        {"type": ev_type, "payload": payload}, sw, sh
-                                    )
-                                    if ev_type != "mouse_move":
-                                        self.log(f"[Reverb] Remote input: {ev_type}")
-                                except Exception as _ee:
-                                    self.log(f"[Reverb] Remote input error: {_ee}")
+                                    sw = win32api.GetSystemMetrics(0)
+                                    sh = win32api.GetSystemMetrics(1)
+                                except Exception:
+                                    pass
+                            try:
+                                self.remote_control._execute_event(
+                                    {"type": ev_type, "payload": payload}, sw, sh
+                                )
+                                if ev_type != "mouse_move":
+                                    self.log(f"[Reverb] Remote input: {ev_type}")
+                            except Exception as _ee:
+                                self.log(f"[Reverb] Remote input error: {_ee}")
 
                     # Terminate signal via Reverb (real-time)
                     elif (
@@ -2845,7 +2901,7 @@ class MonitoringApp:
                             except Exception as _ae:
                                 self.log(f"[Reverb] Gagal refresh active apps: {_ae}")
 
-                    elif "webrtc.browser-offer" in event or "webrtc.request" in event:
+                    elif "webrtc.offer" in event or "webrtc.browser-offer" in event or "webrtc.request" in event:
                         sdp = inner.get("sdp")
                         sdp_type = inner.get("type", "offer")
                         if sdp:
@@ -2925,9 +2981,21 @@ class MonitoringApp:
             import time
             while True:
                 try:
-                    self.log(f"[Reverb] Connecting to: {ws_url}")
+                    # Re-fetch config setiap attempt agar dapat IP terbaru
+                    _fresh = self.data_sender.fetch_reverb_config()
+                    if _fresh:
+                        _h = _fresh.get("host", host)
+                        _p = _fresh.get("port", port)
+                        _k = _fresh.get("app_key", app_key)
+                        if _h in ("localhost", "127.0.0.1"):
+                            import urllib.parse as _up2
+                            _ph = _up2.urlparse(self.data_sender.server_url or "").hostname
+                            if _ph and _ph not in ("localhost", "127.0.0.1"):
+                                _h = _ph
+                        _ws_url_holder[0] = f"ws://{_h}:{_p}/app/{_k}?protocol=7&client=python&version=1.0"
+                    self.log(f"[Reverb] Connecting to: {_ws_url_holder[0]}")
                     ws_app = websocket.WebSocketApp(
-                        ws_url,
+                        _ws_url_holder[0],
                         on_open=on_open,
                         on_message=on_message,
                         on_error=on_error,
