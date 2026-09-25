@@ -138,7 +138,10 @@ class MonitoringApp:
             "usb_blocker": False,
             "block_new_install": False,
             "download_filter": False,
-            "hide_page": False
+            "hide_page": False,
+            "disable_wifi": False,
+            "disable_hotspot": False,
+            "disable_bluetooth": False
         }
 
         self.blocked_apps = []
@@ -315,6 +318,25 @@ class MonitoringApp:
         if "hide_page" in config:
             hp = config["hide_page"]
             self._apply_hide_page_policy(hp.get("enabled", False), hp.get("pages", []))
+
+        if "disable_wifi" in config:
+            _w = bool((config.get("disable_wifi") or {}).get("enabled", False))
+            if _w:
+                self._apply_network_toggle("wifi", True); self._net_wifi = True
+            elif getattr(self, "_net_wifi", None) != False:
+                self._apply_network_toggle("wifi", False); self._net_wifi = False
+        if "disable_hotspot" in config:
+            _h = bool((config.get("disable_hotspot") or {}).get("enabled", False))
+            if _h:
+                self._apply_network_toggle("hotspot", True); self._net_hotspot = True
+            elif getattr(self, "_net_hotspot", None) != False:
+                self._apply_network_toggle("hotspot", False); self._net_hotspot = False
+        if "disable_bluetooth" in config:
+            _b = bool((config.get("disable_bluetooth") or {}).get("enabled", False))
+            if _b:
+                self._apply_network_toggle("bluetooth", True); self._net_bt = True
+            elif getattr(self, "_net_bt", None) != False:
+                self._apply_network_toggle("bluetooth", False); self._net_bt = False
 
         new_features = config.get("features", {})
         for feature in self.enabled_features.keys():
@@ -576,6 +598,102 @@ class MonitoringApp:
     # =========================================================
     # START SERVICES
     # =========================================================
+    def _apply_network_toggle(self, kind, disable):
+        """
+        Kontrol WiFi/Hotspot/Bluetooth. disable=True -> matikan, False -> nyalakan.
+        Radio API (tanpa admin) dijalankan mode -Sta (WinRT butuh STA agar benar
+        diterapkan), lalu diverifikasi dengan membaca ulang state radio.
+        Fallback netsh/PnpDevice (butuh admin) hanya bila Radio API tidak berhasil.
+        Catatan: mematikan WiFi bisa memutus koneksi agent itu sendiri.
+        """
+        import subprocess
+        NO_WIN = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+
+        def run_ps(ps, sta=False):
+            args = ["powershell"]
+            if sta:
+                args.append("-Sta")
+            args += ["-NoProfile", "-Command", ps]
+            try:
+                r = subprocess.run(
+                    args, capture_output=True, text=True,
+                    creationflags=NO_WIN, timeout=30
+                )
+                return r.returncode == 0, (r.stdout or "").strip(), (r.stderr or "").strip()
+            except Exception as e:
+                return False, "", str(e)
+
+        AWAIT = (
+            "Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null;"
+            "$asTask=([System.WindowsRuntimeSystemExtensions].GetMethods()|?{$_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'})[0];"
+            "function Await($op,$t){$m=$asTask.MakeGenericMethod($t);$k=$m.Invoke($null,@($op));$k.Wait(-1)|Out-Null;$k.Result};"
+        )
+
+        # Set radio + baca ulang state. Return (berhasil_sesuai_target, status_text).
+        def radio_set(kind_name, want_on):
+            target = "WiFi" if kind_name == "wifi" else "Bluetooth"
+            desired = "On" if want_on else "Off"
+            ps = ("try {" + AWAIT +
+                  "[Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime]|Out-Null;"
+                  "[Windows.Devices.Radios.RadioAccessStatus,Windows.System.Devices,ContentType=WindowsRuntime]|Out-Null;"
+                  "[Windows.Devices.Radios.RadioState,Windows.System.Devices,ContentType=WindowsRuntime]|Out-Null;"
+                  "$a=Await ([Windows.Devices.Radios.Radio]::RequestAccessAsync()) ([Windows.Devices.Radios.RadioAccessStatus]);"
+                  "if($a -ne 'Allowed'){ 'ACCESS:'+$a } else {"
+                  "$rs=Await ([Windows.Devices.Radios.Radio]::GetRadiosAsync()) ([System.Collections.Generic.IReadOnlyList[Windows.Devices.Radios.Radio]]);"
+                  "foreach($r in $rs){ if($r.Kind -eq '" + target + "'){ "
+                  "Await ($r.SetStateAsync([Windows.Devices.Radios.RadioState]::" + desired + ")) ([Windows.Devices.Radios.RadioAccessStatus])|Out-Null } };"
+                  "Start-Sleep -Milliseconds 600;"
+                  "$rs2=Await ([Windows.Devices.Radios.Radio]::GetRadiosAsync()) ([System.Collections.Generic.IReadOnlyList[Windows.Devices.Radios.Radio]]);"
+                  "$cur='NONE'; foreach($r in $rs2){ if($r.Kind -eq '" + target + "'){ $cur=$r.State } };"
+                  "'STATE:'+$cur }"
+                  "} catch { 'ERR:'+$_.Exception.Message }")
+            ok, out, err = run_ps(ps, sta=True)
+            status = out if out else (err or "no-output")
+            return (ok and out.endswith("STATE:" + desired)), status
+
+        try:
+            if kind == "wifi":
+                applied, st = radio_set("wifi", not disable)
+                if applied:
+                    self.log(f"[Network] WiFi {'OFF' if disable else 'ON'} -> OK (Radio API)")
+                    return
+                state = "Disable" if disable else "Enable"
+                ps = ("Get-NetAdapter | Where-Object { $_.Name -match 'Wi-Fi|Wireless|WLAN' } | "
+                      "ForEach-Object { " + state + "-NetAdapter -Name $_.Name -Confirm:$false }")
+                ok, out, err = run_ps(ps)
+                if not ok:
+                    ns = "disable" if disable else "enable"
+                    ok, out, err = run_ps("netsh interface set interface name=\"Wi-Fi\" admin=" + ns)
+                self.log(f"[Network] WiFi {'OFF' if disable else 'ON'} -> {'OK (netsh)' if ok else 'GAGAL (RadioAPI:' + st + '; perlu admin?): ' + err}")
+
+            elif kind == "bluetooth":
+                applied, st = radio_set("bluetooth", not disable)
+                if applied:
+                    self.log(f"[Network] Bluetooth {'OFF' if disable else 'ON'} -> OK (Radio API)")
+                    return
+                state = "Disable" if disable else "Enable"
+                ps = ("Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | "
+                      "Where-Object { $_.Status -ne 'Unknown' } | "
+                      "ForEach-Object { " + state + "-PnpDevice -InstanceId $_.InstanceId -Confirm:$false }")
+                ok, out, err = run_ps(ps)
+                self.log(f"[Network] Bluetooth {'OFF' if disable else 'ON'} -> {'OK (PnpDevice)' if ok else 'GAGAL (RadioAPI:' + st + '; perlu admin?): ' + err}")
+
+            elif kind == "hotspot":
+                if disable:
+                    ps = ("$ok=$false; try {" + AWAIT +
+                          "[Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager,Windows.Networking.NetworkOperators,ContentType=WindowsRuntime]|Out-Null;"
+                          "[Windows.Networking.Connectivity.NetworkInformation,Windows.Networking.Connectivity,ContentType=WindowsRuntime]|Out-Null;"
+                          "$p=[Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile();"
+                          "$m=[Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($p);"
+                          "Await ($m.StopTetheringAsync()) ([Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult])|Out-Null; $ok=$true"
+                          "} catch { $ok=$false }; netsh wlan stop hostednetwork | Out-Null; if($ok){'OK'}else{'PARTIAL'}")
+                    ok, out, err = run_ps(ps, sta=True)
+                    self.log(f"[Network] Hotspot OFF -> {out or err}")
+                else:
+                    self.log("[Network] Hotspot ON diminta - dilewati (aktivasi manual oleh user)")
+        except Exception as e:
+            self.log(f"[Network] {kind} toggle error: {e}")
+
     def start_all_services(self):
         self.log(f"System initialized. Server: {self.get_base_url()}")
 
@@ -1701,7 +1819,10 @@ class MonitoringApp:
             ("usb_blocker", "USB Blocker"),
             ("block_new_install", "Block New Install"),
             ("download_filter", "Download Filter"),
-            ("hide_page", "Hide Page")
+            ("hide_page", "Hide Page"),
+            ("disable_wifi", "Disable WiFi"),
+            ("disable_hotspot", "Disable Hotspot"),
+            ("disable_bluetooth", "Disable Bluetooth")
         ]
 
         row, col = 0, 0
