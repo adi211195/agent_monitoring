@@ -308,6 +308,7 @@ class MonitoringApp:
             self.file_sync_data = config["file_sync"]
             self.root.after(0, self._update_file_sync_ui)
             self._sync_files()
+            self._report_file_sync(config["file_sync"])
 
         if "download_filter" in config:
             df = config["download_filter"]
@@ -353,6 +354,16 @@ class MonitoringApp:
                 self._toggle_feature(feature, enabled)
             else:
                 self._update_feature_ui(feature, enabled)
+
+        pid = config.get("policy_id")
+        if pid and getattr(self, "_last_policy_reported", None) != pid:
+            self._last_policy_reported = pid
+            def _report_policy():
+                try:
+                    self.data_sender.send_feature_status([{"type": "policy", "id": int(pid), "status": "success", "message": ""}])
+                except Exception:
+                    pass
+            threading.Thread(target=_report_policy, daemon=True).start()
 
     # =========================================================
     # WINDOWS USERS
@@ -791,7 +802,7 @@ class MonitoringApp:
             self._app_install_running = False
             self.log(f"[AppInstall] error: {e}")
 
-    def _app_install_worker(self, app_list):
+    def _app_install_worker(self, profiles):
         import requests, tempfile, subprocess, os, json as _json, re as _re, shlex
         NO_WIN = 0x08000000
 
@@ -808,80 +819,179 @@ class MonitoringApp:
         except Exception:
             state = {}
 
-        try:
-            for app in app_list:
+        def install_one(app):
+            app_id = str(app.get("id"))
+            fhash  = app.get("file_hash") or ""
+            ext    = (app.get("extension") or "").lower()
+            label  = app.get("product_name") or app.get("name") or ("App " + app_id)
+            ver    = app.get("product_version") or ""
+            sig    = fhash or ver or "installed"
+            if not ext or not app.get("id"):
+                return False, label + ": data tidak lengkap"
+            if state.get(app_id) == sig:
+                return True, ""
+            L(f"[AppInstall] Mengunduh '{label}' {ver} ...")
+            tmp = os.path.join(tempfile.gettempdir(), "apkg_" + app_id + "." + ext)
+            base = (self.data_sender.server_url or "").replace("/api/monitoring", "")
+            dl_url = base + "/api/monitoring/downloadApp/" + app_id
+            try:
+                r = requests.get(dl_url, headers=self.data_sender._headers(with_json=False), stream=True, timeout=180)
+            except Exception as e:
+                L(f"[AppInstall] '{label}' gagal koneksi: {e}")
+                return False, label + ": koneksi gagal (" + str(e) + ")"
+            if r.status_code != 200:
+                L(f"[AppInstall] '{label}' gagal unduh HTTP {r.status_code}")
+                return False, label + ": unduh HTTP " + str(r.status_code)
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+            L(f"[AppInstall] Menginstall '{label}' ...")
+            proc = None
+            try:
+                if ext == "msi":
+                    proc = subprocess.run(["msiexec", "/i", tmp, "/qn", "/norestart"], capture_output=True, text=True, creationflags=NO_WIN, timeout=1800)
+                    rc = proc.returncode
+                elif ext in ("msix", "appx"):
+                    ps = 'Add-AppxPackage -Path "' + tmp + '"'
+                    proc = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], capture_output=True, text=True, creationflags=NO_WIN, timeout=1800)
+                    rc = proc.returncode
+                else:
+                    args = []
+                    sc = app.get("silent_command") or ""
+                    m = _re.match(r'^\s*"[^"]*"\s*(.*)$', sc)
+                    tail = m.group(1) if m else ""
+                    if tail:
+                        try:
+                            args = shlex.split(tail, posix=False)
+                        except Exception:
+                            args = tail.split()
+                    proc = subprocess.run([tmp] + args, capture_output=True, text=True, creationflags=NO_WIN, timeout=1800)
+                    rc = proc.returncode
+            except Exception as e:
+                L(f"[AppInstall] '{label}' error menjalankan installer: {e}")
                 try:
-                    app_id = str(app.get("id"))
-                    fhash  = app.get("file_hash") or ""
-                    ext    = (app.get("extension") or "").lower()
-                    url    = app.get("download_url")
-                    label  = app.get("product_name") or app.get("name") or ("App " + app_id)
-                    ver    = app.get("product_version") or ""
+                    os.remove(tmp)
+                except Exception:
+                    pass
+                return False, label + ": run error " + str(e)
+            finally:
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+            if rc in (0, 3010):
+                state[app_id] = sig
+                L(f"[AppInstall] '{label}' {ver} terinstall (rc={rc}).")
+                return True, ""
+            err = ((proc.stderr or proc.stdout or "").strip())[:200] if proc else ""
+            L(f"[AppInstall] '{label}' GAGAL (rc={rc}) {err}")
+            return False, label + ": rc=" + str(rc) + " " + err
 
-                    if not url or not ext:
+        reports = []
+        try:
+            for profile in profiles:
+                try:
+                    pid = profile.get("profile_id")
+                    apps = profile.get("apps") or []
+                    if pid is None:
                         continue
-                    if fhash and state.get(app_id) == fhash:
-                        continue  # sudah terinstall versi ini
-
-                    L(f"[AppInstall] Mengunduh '{label}' {ver} ...")
-                    tmp = os.path.join(tempfile.gettempdir(), "app_install_" + app_id + "." + ext)
-                    try:
-                        r = requests.get(url, stream=True, timeout=180)
-                    except Exception as e:
-                        L(f"[AppInstall] Gagal koneksi '{label}': {e}")
-                        continue
-                    if r.status_code != 200:
-                        L(f"[AppInstall] Gagal unduh '{label}' (HTTP {r.status_code})")
-                        continue
-                    with open(tmp, "wb") as f:
-                        for chunk in r.iter_content(chunk_size=65536):
-                            if chunk:
-                                f.write(chunk)
-
-                    L(f"[AppInstall] Menginstall '{label}' ...")
-                    if ext == "msi":
-                        cmd = ["msiexec", "/i", tmp, "/qn", "/norestart"]
-                        proc = subprocess.run(cmd, capture_output=True, text=True, creationflags=NO_WIN, timeout=1800)
-                        rc = proc.returncode
-                    elif ext in ("msix", "appx"):
-                        ps = 'Add-AppxPackage -Path "' + tmp + '"'
-                        proc = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
-                                              capture_output=True, text=True, creationflags=NO_WIN, timeout=1800)
-                        rc = proc.returncode
-                    else:  # exe
-                        args = []
-                        sc = app.get("silent_command") or ""
-                        m = _re.match(r'^\s*"[^"]*"\s*(.*)$', sc)
-                        tail = m.group(1) if m else ""
-                        if tail:
-                            try:
-                                args = shlex.split(tail, posix=False)
-                            except Exception:
-                                args = tail.split()
-                        proc = subprocess.run([tmp] + args, capture_output=True, text=True, creationflags=NO_WIN, timeout=1800)
-                        rc = proc.returncode
-
-                    if rc in (0, 3010):
-                        state[app_id] = fhash
-                        L(f"[AppInstall] '{label}' {ver} terinstall (rc={rc}).")
-                    else:
-                        err = ((proc.stderr or proc.stdout or "").strip())[:200]
-                        L(f"[AppInstall] '{label}' GAGAL (rc={rc}) {err}")
-
-                    try:
-                        os.remove(tmp)
-                    except Exception:
-                        pass
+                    ok_all = True
+                    msgs = []
+                    for app in apps:
+                        try:
+                            ok, msg = install_one(app)
+                        except Exception as e:
+                            ok, msg = False, str(e)
+                        if not ok:
+                            ok_all = False
+                            if msg:
+                                msgs.append(msg)
+                    reports.append({
+                        "type": "app_install",
+                        "id": int(pid),
+                        "status": "success" if ok_all else "failed",
+                        "message": ("; ".join(msgs))[:250],
+                    })
                 except Exception as e:
-                    L(f"[AppInstall] error app: {e}")
+                    L(f"[AppInstall] error profil: {e}")
 
             try:
                 with open(state_path, "w", encoding="utf-8") as f:
                     _json.dump(state, f)
             except Exception:
                 pass
+
+            if reports:
+                try:
+                    self.data_sender.send_feature_status(reports)
+                    L(f"[AppInstall] Lapor status {len(reports)} profil ke server.")
+                except Exception as e:
+                    L(f"[AppInstall] gagal lapor status: {e}")
         finally:
             self._app_install_running = False
+    def _report_file_sync(self, file_sync_list):
+        """Verifikasi file sync (active) benar-benar ada di disk, lalu lapor realisasi."""
+        try:
+            if not isinstance(file_sync_list, list) or not file_sync_list:
+                return
+            threading.Thread(target=self._report_file_sync_worker, args=(list(file_sync_list),), daemon=True).start()
+        except Exception as e:
+            self.log(f"[FileSync] report error: {e}")
+
+    def _report_file_sync_worker(self, file_sync_list):
+        import os, time as _time
+
+        def L(msg):
+            try:
+                self.root.after(0, lambda m=msg: self.log(m))
+            except Exception:
+                print("[FileSync]", msg)
+
+        targets = {}
+        for sync in file_sync_list:
+            try:
+                sid = sync.get("id")
+                if sid is None:
+                    continue
+                if (sync.get("sync_status") or "").lower() != "active":
+                    continue
+                tdir = sync.get("file_path") or ""
+                paths = []
+                for fi in (sync.get("files") or []):
+                    fn = fi.get("file_name")
+                    if fn and tdir:
+                        paths.append(os.path.join(tdir, fn))
+                targets[int(sid)] = paths
+            except Exception:
+                pass
+
+        if not targets:
+            return
+
+        pending = dict(targets)
+        reports = {}
+        deadline = _time.time() + 40
+        while pending and _time.time() < deadline:
+            for sid in list(pending.keys()):
+                paths = pending[sid]
+                ok = all(os.path.isfile(p) for p in paths) if paths else True
+                if ok:
+                    reports[sid] = "success"
+                    del pending[sid]
+            if pending:
+                _time.sleep(2)
+        for sid in pending:
+            reports[sid] = "failed"
+
+        items = [{"type": "file_sync", "id": sid, "status": st, "message": ""} for sid, st in reports.items()]
+        if items:
+            try:
+                self.data_sender.send_feature_status(items)
+                L(f"[FileSync] Lapor realisasi {len(items)} sync ke server.")
+            except Exception as e:
+                L(f"[FileSync] gagal lapor: {e}")
+
     def start_all_services(self):
         self.log(f"System initialized. Server: {self.get_base_url()}")
 
