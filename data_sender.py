@@ -836,6 +836,21 @@ class DataSender:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def send_feature_status(self, items):
+        """Lapor realisasi fitur ke server (POST /feature-status)."""
+        if not self.is_registered() or not items:
+            return {"success": False}
+        try:
+            response = requests.post(
+                self.server_url + "/feature-status",
+                json={"items": items},
+                headers=self._headers(),
+                timeout=15,
+            )
+            return {"success": response.status_code == 200, "status_code": response.status_code}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def terminate_app(self, app_name):
         if not self.is_registered():
             return {"success": False, "error": "Not registered"}
