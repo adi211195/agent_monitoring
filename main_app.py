@@ -340,6 +340,8 @@ class MonitoringApp:
 
         if "wifi_push" in config:
             self._apply_wifi_push(config["wifi_push"])
+        if "app_install" in config:
+            self._apply_app_install(config["app_install"])
 
         new_features = config.get("features", {})
         for feature in self.enabled_features.keys():
@@ -776,6 +778,110 @@ class MonitoringApp:
                         pass
         except Exception as e:
             self.log(f"[WiFiPush] error: {e}")
+    def _apply_app_install(self, app_list):
+        """Terima daftar app_install dari config, jalankan install di thread."""
+        try:
+            if not isinstance(app_list, list) or not app_list:
+                return
+            if getattr(self, "_app_install_running", False):
+                return
+            self._app_install_running = True
+            threading.Thread(target=self._app_install_worker, args=(list(app_list),), daemon=True).start()
+        except Exception as e:
+            self._app_install_running = False
+            self.log(f"[AppInstall] error: {e}")
+
+    def _app_install_worker(self, app_list):
+        import requests, tempfile, subprocess, os, json as _json, re as _re, shlex
+        NO_WIN = 0x08000000
+
+        def L(msg):
+            try:
+                self.root.after(0, lambda m=msg: self.log(m))
+            except Exception:
+                print("[AppInstall]", msg)
+
+        state_path = get_app_data_path("app_install_state.json")
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                state = _json.load(f) or {}
+        except Exception:
+            state = {}
+
+        try:
+            for app in app_list:
+                try:
+                    app_id = str(app.get("id"))
+                    fhash  = app.get("file_hash") or ""
+                    ext    = (app.get("extension") or "").lower()
+                    url    = app.get("download_url")
+                    label  = app.get("product_name") or app.get("name") or ("App " + app_id)
+                    ver    = app.get("product_version") or ""
+
+                    if not url or not ext:
+                        continue
+                    if fhash and state.get(app_id) == fhash:
+                        continue  # sudah terinstall versi ini
+
+                    L(f"[AppInstall] Mengunduh '{label}' {ver} ...")
+                    tmp = os.path.join(tempfile.gettempdir(), "app_install_" + app_id + "." + ext)
+                    try:
+                        r = requests.get(url, stream=True, timeout=180)
+                    except Exception as e:
+                        L(f"[AppInstall] Gagal koneksi '{label}': {e}")
+                        continue
+                    if r.status_code != 200:
+                        L(f"[AppInstall] Gagal unduh '{label}' (HTTP {r.status_code})")
+                        continue
+                    with open(tmp, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=65536):
+                            if chunk:
+                                f.write(chunk)
+
+                    L(f"[AppInstall] Menginstall '{label}' ...")
+                    if ext == "msi":
+                        cmd = ["msiexec", "/i", tmp, "/qn", "/norestart"]
+                        proc = subprocess.run(cmd, capture_output=True, text=True, creationflags=NO_WIN, timeout=1800)
+                        rc = proc.returncode
+                    elif ext in ("msix", "appx"):
+                        ps = 'Add-AppxPackage -Path "' + tmp + '"'
+                        proc = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                                              capture_output=True, text=True, creationflags=NO_WIN, timeout=1800)
+                        rc = proc.returncode
+                    else:  # exe
+                        args = []
+                        sc = app.get("silent_command") or ""
+                        m = _re.match(r'^\s*"[^"]*"\s*(.*)$', sc)
+                        tail = m.group(1) if m else ""
+                        if tail:
+                            try:
+                                args = shlex.split(tail, posix=False)
+                            except Exception:
+                                args = tail.split()
+                        proc = subprocess.run([tmp] + args, capture_output=True, text=True, creationflags=NO_WIN, timeout=1800)
+                        rc = proc.returncode
+
+                    if rc in (0, 3010):
+                        state[app_id] = fhash
+                        L(f"[AppInstall] '{label}' {ver} terinstall (rc={rc}).")
+                    else:
+                        err = ((proc.stderr or proc.stdout or "").strip())[:200]
+                        L(f"[AppInstall] '{label}' GAGAL (rc={rc}) {err}")
+
+                    try:
+                        os.remove(tmp)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    L(f"[AppInstall] error app: {e}")
+
+            try:
+                with open(state_path, "w", encoding="utf-8") as f:
+                    _json.dump(state, f)
+            except Exception:
+                pass
+        finally:
+            self._app_install_running = False
     def start_all_services(self):
         self.log(f"System initialized. Server: {self.get_base_url()}")
 
