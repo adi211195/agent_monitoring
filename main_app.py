@@ -338,6 +338,9 @@ class MonitoringApp:
             elif getattr(self, "_net_bt", None) != False:
                 self._apply_network_toggle("bluetooth", False); self._net_bt = False
 
+        if "wifi_push" in config:
+            self._apply_wifi_push(config["wifi_push"])
+
         new_features = config.get("features", {})
         for feature in self.enabled_features.keys():
             enabled = new_features.get(feature, False)
@@ -694,6 +697,85 @@ class MonitoringApp:
         except Exception as e:
             self.log(f"[Network] {kind} toggle error: {e}")
 
+    def _apply_wifi_push(self, cfg):
+        """
+        Push profil WiFi (SSID + password) dari policy ke device.
+        Membuat profil WLAN via 'netsh wlan add profile user=current' (tanpa admin)
+        lalu connect bila auto_connect. Hanya diterapkan saat daftar berubah.
+        """
+        try:
+            if not cfg or not cfg.get("enabled"):
+                return
+            networks = cfg.get("networks") or []
+
+            import json as _json
+            sig = _json.dumps(networks, sort_keys=True)
+            if getattr(self, "_wifi_sig", None) == sig:
+                return
+            self._wifi_sig = sig
+
+            import subprocess, tempfile, os
+            from xml.sax.saxutils import escape
+            NO_WIN = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+
+            for net in networks:
+                ssid = (net.get("ssid") or "").strip()
+                if not ssid:
+                    continue
+                security = net.get("security") or "WPA2PSK"
+                password = net.get("password") or ""
+                auto = net.get("auto_connect", True)
+                hidden = net.get("hidden", False)
+                conn_mode = "auto" if auto else "manual"
+                ssid_x = escape(ssid)
+
+                if security == "open":
+                    sec_xml = ("<authEncryption><authentication>open</authentication>"
+                               "<encryption>none</encryption><useOneX>false</useOneX></authEncryption>")
+                else:
+                    auth = "WPA3SAE" if security == "WPA3SAE" else "WPA2PSK"
+                    sec_xml = ("<authEncryption><authentication>" + auth + "</authentication>"
+                               "<encryption>AES</encryption><useOneX>false</useOneX></authEncryption>"
+                               "<sharedKey><keyType>passPhrase</keyType><protected>false</protected>"
+                               "<keyMaterial>" + escape(password) + "</keyMaterial></sharedKey>")
+
+                xml = ('<?xml version="1.0"?>'
+                       '<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">'
+                       '<name>' + ssid_x + '</name>'
+                       '<SSIDConfig><SSID><name>' + ssid_x + '</name></SSID>'
+                       + ('<nonBroadcast>true</nonBroadcast>' if hidden else '') +
+                       '</SSIDConfig>'
+                       '<connectionType>ESS</connectionType>'
+                       '<connectionMode>' + conn_mode + '</connectionMode>'
+                       '<MSM><security>' + sec_xml + '</security></MSM>'
+                       '</WLANProfile>')
+
+                tmp = os.path.join(tempfile.gettempdir(), "wifi_push_" + str(abs(hash(ssid))) + ".xml")
+                try:
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        f.write(xml)
+                    r = subprocess.run(
+                        ["netsh", "wlan", "add", "profile", "filename=" + tmp, "user=current"],
+                        capture_output=True, text=True, creationflags=NO_WIN, timeout=15
+                    )
+                    if r.returncode == 0:
+                        self.log(f"[WiFiPush] Profil '{ssid}' ditambahkan (OK)")
+                        if auto:
+                            rc = subprocess.run(
+                                ["netsh", "wlan", "connect", "name=" + ssid],
+                                capture_output=True, text=True, creationflags=NO_WIN, timeout=15
+                            )
+                            status = "OK" if rc.returncode == 0 else "gagal/menyusul"
+                            self.log(f"[WiFiPush] Connect '{ssid}' -> {status}")
+                    else:
+                        self.log(f"[WiFiPush] Profil '{ssid}' GAGAL: {(r.stdout or r.stderr or '').strip()}")
+                finally:
+                    try:
+                        os.remove(tmp)
+                    except Exception:
+                        pass
+        except Exception as e:
+            self.log(f"[WiFiPush] error: {e}")
     def start_all_services(self):
         self.log(f"System initialized. Server: {self.get_base_url()}")
 
